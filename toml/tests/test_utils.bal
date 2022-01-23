@@ -1,50 +1,5 @@
 import ballerina/test;
 
-@test:Config {}
-function testFullLineComment() returns error? {
-    Lexer lexer = setLexerString("# someComment");
-    check assertToken(lexer, EOL);
-}
-
-@test:Config {}
-function testEOLComment() returns error? {
-    Lexer lexer = setLexerString("someKey = \"someValue\" # someComment");
-    check assertToken(lexer, EOL, 7);
-}
-
-@test:Config {}
-function testMultipleWhiteSpaces() returns error? {
-    Lexer lexer = setLexerString("  ");
-    check assertToken(lexer, WHITESPACE);
-    check assertToken(lexer, EOL);
-}
-
-@test:Config {}
-function testUnquotedKey() returns error? {
-    Lexer lexer = setLexerString("somekey = \"Some Value\"");
-    check assertToken(lexer, UNQUOTED_KEY, lexeme = "somekey");
-}
-
-@test:Config {}
-function testUnquotedKeyWithInvalidChar() {
-    Lexer lexer = setLexerString("some$value = 1");
-    assertLexicalError(lexer);
-}
-
-@test:Config {}
-function testKeyValueSeperator() returns error? {
-    Lexer lexer = setLexerString("somekey = 1");
-    check assertToken(lexer, WHITESPACE, 2);
-    check assertToken(lexer, KEY_VALUE_SEPERATOR);
-    check assertToken(lexer, WHITESPACE);
-}
-
-@test:Config {}
-function testBasicString() returns error? {
-    Lexer lexer = setLexerString("someKey = \"someValue\"");
-    check assertToken(lexer, BASIC_STRING, 5, "someValue");
-}
-
 # Returns a new lexer with the configured line for testing
 #
 # + line - Testing TOML string
@@ -98,4 +53,23 @@ function getToken(Lexer lexer, int index) returns Token|error {
     }
 
     return token;
+}
+
+# Assert if the key and value is properly set in the TOML object.
+#
+# + toml - TOML object to be asserted  
+# + key - Expected key  
+# + value - Expected value of the key  
+function assertKey(map<any> toml, string key, string value) {
+    test:assertTrue(toml.hasKey(key));
+    test:assertEquals(<string>toml[key], value);
+}
+
+# Assert if an parsing error is generated during the parsing
+#
+# + text - If isFile is set, file path else TOML string  
+# + isFile - If set, reads the TOML file. default = false.  
+function assertParsingError(string text, boolean isFile = false) {
+    map<any>|error toml = isFile ? readFile(text) : read(text);
+    test:assertTrue(toml is ParsingError);
 }
