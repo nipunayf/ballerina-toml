@@ -70,11 +70,17 @@ function assertKey(map<any> toml, string key, string value) {
 
 # Assert if an parsing error is generated during the parsing
 #
-# + text - If isFile is set, file path else TOML string  
+# + text - If isFile is set, file path else TOML string.
 # + isFile - If set, reads the TOML file. default = false.  
-function assertParsingError(string text, boolean isFile = false) {
+# + isLexical - If set, checks for Lexical errors. Else, checks for Parsing errors.
+function assertParsingError(string text, boolean isFile = false, boolean isLexical = false) {
     map<any>|error toml = isFile ? readFile(ORIGIN_FILE_PATH + text + ".toml") : read(text);
-    test:assertTrue(toml is ParsingError);
+    if (isLexical) {
+        test:assertTrue(toml is LexicalError);
+    } else {
+        test:assertTrue(toml is ParsingError);
+    }
+
 }
 
 # Assertions to validate the values of the TOML object.  
@@ -105,7 +111,7 @@ class AssertKey {
         test:assertTrue(assertedMap.hasKey(tomlKey));
 
         if (tomlValue != ()) {
-            test:assertEquals(<string>assertedMap[tomlKey], tomlValue);
+            test:assertEquals(<anydata>assertedMap[tomlKey], tomlValue);
         }
         return self;
     }
