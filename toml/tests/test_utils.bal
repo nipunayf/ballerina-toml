@@ -1,5 +1,7 @@
 import ballerina/test;
 
+const ORIGIN_FILE_PATH = "toml/tests/resources/";
+
 # Returns a new lexer with the configured line for testing
 #
 # + line - Testing TOML string
@@ -29,9 +31,10 @@ function assertToken(Lexer lexer, TOMLToken assertingToken, int index = 0, strin
 
 # Assert if a lexical error is generated during the tokenization
 #
-# + lexer - Testing lexer 
+# + tomlString - String to generate a Lexer token  
 # + index - Index of the targetted token (defualt = 0)
-function assertLexicalError(Lexer lexer, int index = 0) {
+function assertLexicalError(string tomlString, int index = 0) {
+    Lexer lexer = setLexerString(tomlString);
     Token|error token = getToken(lexer, index);
     test:assertTrue(token is LexicalError);
 }
@@ -70,6 +73,86 @@ function assertKey(map<any> toml, string key, string value) {
 # + text - If isFile is set, file path else TOML string  
 # + isFile - If set, reads the TOML file. default = false.  
 function assertParsingError(string text, boolean isFile = false) {
-    map<any>|error toml = isFile ? readFile(text) : read(text);
+    map<any>|error toml = isFile ? readFile(ORIGIN_FILE_PATH + text + ".toml") : read(text);
     test:assertTrue(toml is ParsingError);
+}
+
+# Assertions to validate the values of the TOML object.  
+class AssertKey {
+    private map<anydata> toml;
+    private map<anydata>? innerData;
+    private string[] stack;
+
+    # Init the AssertKey class.
+    #
+    # + text - If isFile is set, file path else TOML string  
+    # + isFile - If set, reads the TOML file. default = false.    
+    function init(string text, boolean isFile = false) returns error? {
+        self.toml = isFile ? check readFile(ORIGIN_FILE_PATH + text + ".toml") : check read(text);
+        self.innerData = ();
+        self.stack = [];
+    }
+
+    # Assert the key and value of the TOML object.
+    # Recall this method to check mulitple values of the same TOML object.
+    #
+    # + tomlKey - Expected key of the TOML object  
+    # + tomlValue - Expected value of the key. If no value is provided, value won't be checked.
+    # + return - AssertKey object to reapply methods.  
+    function hasKey(string tomlKey, anydata tomlValue = ()) returns AssertKey {
+        map<anydata> assertedMap = self.innerData ?: self.toml;
+
+        test:assertTrue(assertedMap.hasKey(tomlKey));
+
+        if (tomlValue != ()) {
+            test:assertEquals(<string>assertedMap[tomlKey], tomlValue);
+        }
+        return self;
+    }
+
+    # Dive into an inner key and assert the value.
+    #
+    # + tomlKey - Inner key
+    # + return - AssertKey object to reapply methods.    
+    function dive(string tomlKey) returns AssertKey {
+
+        // If the current node is the root
+        if (self.innerData == ()) {
+            self.innerData = <map<anydata>?>self.toml[tomlKey];
+        }
+
+        // If the current node is nested
+        else {
+            self.innerData = <map<anydata?>>self.innerData[tomlKey];
+        }
+
+        self.stack.push(tomlKey);
+        return self;
+    }
+
+    # Hop out from the current inner key.
+    #
+    # + return - Return Value Description  
+    function hop() returns AssertKey {
+
+        // If the parent node is the root
+        if (self.stack.length() == 1) {
+            self.innerData = ();
+            return self;
+        }
+
+        // Set the innderData to its parent map
+        map<anydata>? targettedObject;
+        foreach int i in 0 ... self.stack.length() - 2 {
+            targettedObject = <map<anydata>?>self.toml[self.stack[i]];
+        }
+        self.innerData = targettedObject;
+
+        return self;
+    }
+
+    # Invoke this after finish writing the assertions.  
+    function close() {
+        return;
+    }
 }
