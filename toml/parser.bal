@@ -48,7 +48,9 @@ class Parser {
 
         // Iterating each document line
         while self.lineIndex < self.numLines {
-            self.initLexer();
+            if (!self.initLexer(false)) {
+                return self.generateError("Cannot open TOML document");
+            }
             self.currentToken = check self.lexer.getToken();
             self.lexer.state = EXPRESSION_KEY;
 
@@ -116,9 +118,10 @@ class Parser {
     # + return - Returns the structure after assigning the value.
     private function keyValue(boolean alreadyExists, map<anydata>? structure) returns map<anydata>|error {
         string tomlKey = self.currentToken.value;
-        self.nextToken = check self.lexer.getToken();
 
-        match self.nextToken.token {
+        check self.checkToken([DOT, KEY_VALUE_SEPERATOR], "Expected a '.' or a '=' after a key");
+
+        match self.currentToken.token {
             DOT => {
                 check self.checkToken([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '.'");
 
@@ -133,34 +136,18 @@ class Parser {
 
             KEY_VALUE_SEPERATOR => {
                 self.lexer.state = EXPRESSION_VALUE;
+
                 check self.checkToken([ // TODO: add the remaning values
                     BASIC_STRING,
                     LITERAL_STRING,
                     MULTI_BSTRING_DELIMITER,
                     MULTI_LSTRING_DELIMITER,
                     INTEGER,
+                    ARRAY_START,
                     BOOLEAN
                 ], "Expected a value after '='");
 
-                match self.currentToken.token { // Check for values that span multiple lines
-                    MULTI_BSTRING_DELIMITER => {
-                        check self.multiBasicString();
-                        self.value = self.lexemeBuffer;
-                    }
-                    MULTI_LSTRING_DELIMITER => {
-                        check self.multiLiteralString();
-                        self.value = self.lexemeBuffer;
-                    }
-                    INTEGER => {
-                        check self.number();
-                    }
-                    BOOLEAN => {
-                        self.value = check self.processTypeCastingError('boolean:fromString(self.currentToken.value));
-                    }
-                    _ => {
-                        self.value = self.currentToken.value;
-                    }
-                }
+                self.value = check self.dataValue();
 
                 if (structure is map<anydata> ? (<map<anydata>>structure).hasKey(tomlKey)
                 : structure != () ? alreadyExists : true && alreadyExists) {
@@ -173,6 +160,35 @@ class Parser {
                 return self.generateError("Expected a '.' or a '=' after a key");
             }
         }
+    }
+
+    private function dataValue() returns anydata|error {
+        anydata returnData;
+        match self.currentToken.token {
+            MULTI_BSTRING_DELIMITER => {
+                check self.multiBasicString();
+                returnData = self.lexemeBuffer;
+            }
+            MULTI_LSTRING_DELIMITER => {
+                check self.multiLiteralString();
+                returnData = self.lexemeBuffer;
+            }
+            INTEGER => {
+                returnData = check self.number();
+            }
+            BOOLEAN => {
+                returnData = check self.processTypeCastingError('boolean:fromString(self.currentToken.value));
+            }
+            ARRAY_START => {
+                returnData = check self.array();
+            }
+            _ => {
+                returnData = self.currentToken.value;
+            }
+        }
+        self.lexemeBuffer = "";
+        self.value = "";
+        return returnData;
     }
 
     private function multiBasicString() returns error? {
@@ -197,8 +213,9 @@ class Parser {
                     self.lexer.state = MULTILINE_ESCAPE;
                 }
                 EOL => { // Processing new lines
-                    self.lineIndex += 1;
-                    self.initLexer();
+                    if (!self.initLexer()) {
+                        return self.generateError("Expected to end the multi-line basic string");
+                    }
                     if !(self.lexer.state == MULTILINE_ESCAPE) {
                         self.lexemeBuffer += "\\n";
                     }
@@ -233,8 +250,9 @@ class Parser {
                     self.lexemeBuffer += self.currentToken.value;
                 }
                 EOL => { // Processing new lines
-                    self.lineIndex += 1;
-                    self.initLexer();
+                    if (!self.initLexer()) {
+                        return self.generateError("Expected to end the multi-line literal string");
+                    }
                     self.lexemeBuffer += "\\n";
                 }
             }
@@ -252,13 +270,13 @@ class Parser {
     #
     # + fractional - Flag is set when processing the fractional segment
     # + return - Parsing error if occurred
-    private function number(boolean fractional = false) returns error? {
+    private function number(boolean fractional = false) returns anydata|error {
         self.lexemeBuffer += self.currentToken.value;
-        self.nextToken = check self.lexer.getToken();
+        check self.checkToken([EOL, EXPONENTIAL, DOT, ARRAY_SEPARATOR, ARRAY_END], "Invalid token after an integer");
 
-        match self.nextToken.token {
-            EOL => { // Integer 
-                self.value = fractional ? check self.processTypeCastingError('float:fromString(self.lexemeBuffer))
+        match self.currentToken.token {
+            EOL|ARRAY_SEPARATOR|ARRAY_END => { // Generate the final number
+                return fractional ? check self.processTypeCastingError('float:fromString(self.lexemeBuffer))
                                         : check self.processTypeCastingError('int:fromString(self.lexemeBuffer));
             }
             EXPONENTIAL => { // Handles exponential numbers
@@ -267,7 +285,7 @@ class Parser {
                 // Evaluating the exponential value
                 float exponent = <float>(check self.processTypeCastingError('float:fromString(self.currentToken.value)));
                 float prefix = <float>(check self.processTypeCastingError('float:fromString(self.lexemeBuffer)));
-                self.value = prefix * 'float:pow(10, exponent);
+                return prefix * 'float:pow(10, exponent);
             }
             DOT => { // Handles fractional numbers
                 if (fractional) {
@@ -275,27 +293,55 @@ class Parser {
                 }
                 check self.checkToken(INTEGER, "Expected an integer after the decimal point");
                 self.lexemeBuffer += ".";
-                check self.number(true);
+                return check self.number(true);
             }
         }
     }
 
-    # Cast the token to the respective Ballerina type.
-    #
-    # + return - returns the Ballerian type  
-    private function getProcessedValue() returns anydata|ParsingError {
+    private function array(anydata[] tempArray = [], boolean isStart = true) returns anydata[]|error {
+
+        check self.checkToken([ // TODO: add the remaning values
+            BASIC_STRING,
+            LITERAL_STRING,
+            MULTI_BSTRING_DELIMITER,
+            MULTI_LSTRING_DELIMITER,
+            INTEGER,
+            BOOLEAN,
+            ARRAY_START,
+            ARRAY_END,
+            EOL,
+            ARRAY_SEPARATOR
+        ], "Expected a value after '='");
+
         match self.currentToken.token {
-            BASIC_STRING|LITERAL_STRING => {
-                return self.currentToken.value;
+            EOL => {
+                if (self.initLexer()) {
+                    return self.array(tempArray, false);
+                }
+                return self.generateError("Exptected ']' at the end of an array");
             }
-            INTEGER => {
-                return self.processTypeCastingError('int:fromString(self.currentToken.value));
+            ARRAY_END => { // If the array ends with a ','
+                return tempArray;
             }
-            BOOLEAN => {
-                return self.processTypeCastingError('boolean:fromString(self.currentToken.value));
+            INTEGER => { // Tokens that have consumed the next token
+                tempArray.push(check self.dataValue());
+                return self.currentToken.token == ARRAY_END ? tempArray : self.array(tempArray, false);
             }
-            MULTI_BSTRING_DELIMITER|MULTI_LSTRING_DELIMITER => {
-                return self.lexemeBuffer;
+            _ => { // Array value
+                tempArray.push(check self.dataValue());
+                check self.checkToken([ARRAY_SEPARATOR, ARRAY_END], "Expected an ',' or ']' after an array value");
+
+                match self.currentToken.token {
+                    ARRAY_END => { // End of the array value
+                        return tempArray;
+                    }
+                    ARRAY_SEPARATOR => { // Expects another array value
+                        return self.array(tempArray, false);
+                    }
+                    _ => {
+                        return self.generateError("Expected an ',' or ']' after an array value");
+                    }
+                }
             }
         }
     }
@@ -336,10 +382,17 @@ class Parser {
         }
     }
 
-    private function initLexer() {
+    private function initLexer(boolean incrementLine = true) returns boolean {
+        if (incrementLine) {
+            self.lineIndex += 1;
+        }
+        if (self.lineIndex >= self.numLines) {
+            return false;
+        }
         self.lexer.line = self.lines[self.lineIndex];
         self.lexer.index = 0;
         self.lexer.lineNumber = self.lineIndex;
+        return true;
     }
 
     # Generates a Parsing Error Error.
