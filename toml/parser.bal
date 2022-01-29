@@ -7,6 +7,7 @@ class Parser {
     # Input TOML lines
     private string[] lines;
     private int numLines;
+    private int lineIndex;
 
     # Output TOML object
     private map<anydata> tomlObject;
@@ -17,45 +18,59 @@ class Parser {
     # Next token
     private Token nextToken;
 
+    # Buffer for multi-line values
+    private string multiLexeme;
+
     # Lexical analyzer tool for getting the tokens
     private Lexer lexer;
 
     function init(string[] lines) {
         self.lines = lines;
-        self.numLines = lines.length() - 1;
+        self.numLines = lines.length();
         self.tomlObject = {};
         self.lexer = new Lexer();
         self.currentToken = {token: DUMMY};
         self.nextToken = {token: DUMMY};
+        self.lineIndex = 0;
+        self.multiLexeme = "";
     }
 
     # Generates a map object for the TOML document.
-    # Initally, considers the predictions for the 'expression'
+    # Initally, considers the predictions for the 'expression', 'table', and 'array table'
     #
     # + return - If success, map object for the TOMl document. 
     # Else, a lexical or a parser error. 
     public function parse() returns map<anydata>|error {
 
         // Iterating each document line
-        foreach int i in 0 ... self.numLines {
-            self.lexer.line = self.lines[i];
-            self.lexer.index = 0;
-            self.lexer.lineNumber = i;
-            self.lexer.lexeme = "";
+        while self.lineIndex < self.numLines {
+            self.initLexer();
+            self.currentToken = check self.lexer.getToken();
             self.lexer.state = EXPRESSION_KEY;
 
-            self.currentToken = check self.lexer.getToken();
-
             match self.currentToken.token {
-                UNQUOTED_KEY|BASIC_STRING|LITERAL_STRING => {
+                UNQUOTED_KEY|BASIC_STRING|LITERAL_STRING => { // Process a key value
+
                     map<anydata> output = check self.keyValue(
                         self.tomlObject.hasKey(self.currentToken.value),
                         self.tomlObject);
+
+                    // Add the key-value pair to the final TOML object.
                     string tomlKey = output.keys()[0];
                     self.tomlObject[tomlKey] = output[tomlKey];
                     self.lexer.state = EXPRESSION_KEY;
                 }
+                // TODO: Add support for tables
+                // TODO: Add support for table arrays
             }
+
+            // Comments and new lines are ignored.
+            // However, other expressions cannot have addtional tokens in their line.
+            if (self.currentToken.token != EOL) {
+                check self.checkToken(EOL, "Cannot have anymore tokens in the same line");
+            }
+
+            self.lineIndex += 1;
         }
 
         // Return the TOML object
@@ -64,31 +79,23 @@ class Parser {
 
     # Assert the next lexer token with the predicted token.
     #
-    # + assertedToken - Predicted token  
+    # + expectedTokens - Predicted token or tokens
     # + errorMessage - Parsing error if expected token not found  
-    # + isNextToken - If flag set, obtains the next token. Else, calls the lexer for new token.
     # + return - Parsing error if not found
-    private function checkToken(TOMLToken assertedToken, string errorMessage, boolean isNextToken = false) returns error? {
+    private function checkToken(TOMLToken|TOMLToken[] expectedTokens, string errorMessage) returns error? {
         self.currentToken = check self.lexer.getToken();
 
-        if (self.currentToken.token != assertedToken) {
-            return self.generateError(errorMessage);
+        // Generate an error if the expected token differ from the actual token.
+        if (expectedTokens is TOMLToken) {
+            if (self.currentToken.token != expectedTokens) {
+                return self.generateError(errorMessage);
+            }
+        } else {
+            if (expectedTokens.indexOf(self.currentToken.token) == ()) {
+                return self.generateError(errorMessage);
+            }
         }
-    }
 
-    # Assert the next lexer token with multiple predicted tokens.
-    #
-    # + assertedTokens - Predicted tokens  
-    # + errorMessage - Parsing error if expected token not found  
-    # + isNextToken - If flag set, obtains the next token. Else, calls the lexer for new token.
-    # + return - Parsing error if not found
-    private function checkMultipleTokens(TOMLToken[] assertedTokens, string errorMessage, boolean isNextToken = false) returns error? {
-        // self.currentToken = isNextToken ? self.nextToken : check self.lexer.getToken();
-        self.currentToken = check self.lexer.getToken();
-
-        if (assertedTokens.indexOf(self.currentToken.token) == ()) {
-            return self.generateError(errorMessage);
-        }
     }
 
     # Handles the rule: key -> simple-key | dotted-key
@@ -106,7 +113,7 @@ class Parser {
 
         match self.nextToken.token {
             DOT => {
-                check self.checkMultipleTokens([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '.'", true);
+                check self.checkToken([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '.'");
 
                 map<anydata> value = check self.keyValue(
                     // If the structure exists and already assigned a value that is not a table,
@@ -119,14 +126,26 @@ class Parser {
 
             KEY_VALUE_SEPERATOR => {
                 self.lexer.state = EXPRESSION_VALUE;
-                check self.checkMultipleTokens([ // TODO: add the remaning values
+                check self.checkToken([ // TODO: add the remaning values
                     BASIC_STRING,
                     LITERAL_STRING,
+                    MULTI_BSTRING_DELIMITER,
+                    MULTI_LSTRING_DELIMITER,
                     INTEGER,
                     BOOLEAN
                 ], "Expected a value after '='");
 
-                if (structure is map<anydata> ? (<map<anydata>>structure).hasKey(tomlKey) : structure != () ? alreadyExists : true && alreadyExists) {
+                match self.currentToken.token { // Check for values that span multiple lines
+                    MULTI_BSTRING_DELIMITER => {
+                        check self.multiBasicString();
+                    }
+                    MULTI_LSTRING_DELIMITER => {
+                        check self.multiLiteralString();
+                    }
+                }
+
+                if (structure is map<anydata> ? (<map<anydata>>structure).hasKey(tomlKey)
+                : structure != () ? alreadyExists : true && alreadyExists) {
                     return self.generateError("Duplicate key '" + tomlKey + "'");
                 } else {
                     return self.buildInternalTable(tomlKey, check self.getProcessedValue(), structure);
@@ -136,6 +155,79 @@ class Parser {
                 return self.generateError("Expected a '.' or a '=' after a key");
             }
         }
+    }
+
+    private function multiBasicString() returns error? {
+        self.lexer.state = MULTILINE_BSTRING;
+        self.multiLexeme = "";
+
+        // Predict the next toknes
+        check self.checkToken([
+            MULTI_BSTRING_CHARS,
+            MULTI_BSTRING_ESCAPE,
+            MULTI_BSTRING_DELIMITER,
+            EOL
+        ], "Invalid token inside a multi-line string");
+
+        // Predicting the next tokens until the end of the string.
+        while (self.currentToken.token != MULTI_BSTRING_DELIMITER) {
+            match self.currentToken.token {
+                MULTI_BSTRING_CHARS => { // Regular basic string
+                    self.multiLexeme += self.currentToken.value;
+                }
+                MULTI_BSTRING_ESCAPE => { // Escape token
+                    self.lexer.state = MULTILINE_ESCAPE;
+                }
+                EOL => { // Processing new lines
+                    self.lineIndex += 1;
+                    self.initLexer();
+                    if !(self.lexer.state == MULTILINE_ESCAPE) {
+                        self.multiLexeme += "\\n";
+                    }
+                }
+            }
+            check self.checkToken([
+                MULTI_BSTRING_CHARS,
+                MULTI_BSTRING_ESCAPE,
+                MULTI_BSTRING_DELIMITER,
+                EOL
+            ], "Invalid token inside a multi-line string");
+        }
+
+        self.lexer.state = EXPRESSION_KEY;
+    }
+
+    private function multiLiteralString() returns error? {
+        self.lexer.state = MULITLINE_LSTRING;
+        self.multiLexeme = "";
+
+        // Predict the next toknes
+        check self.checkToken([
+            MULTI_LSTRING_CHARS,
+            MULTI_LSTRING_DELIMITER,
+            EOL
+        ], "Invalid token inside a multi-line string");
+
+        // Predicting the next tokens until the end of the string.
+        while (self.currentToken.token != MULTI_LSTRING_DELIMITER) {
+            match self.currentToken.token {
+                MULTI_LSTRING_CHARS => { // Regular literal string
+                    self.multiLexeme += self.currentToken.value;
+                }
+                EOL => { // Processing new lines
+                    self.lineIndex += 1;
+                    self.initLexer();
+                    self.multiLexeme += "\\n";
+                }
+            }
+            check self.checkToken([
+                MULTI_LSTRING_CHARS,
+                MULTI_LSTRING_DELIMITER,
+                EOL
+            ], "Invalid token inside a multi-line string");
+        }
+
+        self.lexer.state = EXPRESSION_KEY;
     }
 
     # Cast the token to the respective Ballerina type.
@@ -152,9 +244,16 @@ class Parser {
             BOOLEAN => {
                 return self.processTypeCastingError('boolean:fromString(self.currentToken.value));
             }
+            MULTI_BSTRING_DELIMITER|MULTI_LSTRING_DELIMITER => {
+                return self.multiLexeme;
+            }
         }
     }
 
+    # Check errors during type casting to Ballerina types.
+    #
+    # + value - Value to be type casted.
+    # + return - Value as a Ballerina data type  
     private function processTypeCastingError(anydata|error value) returns anydata|ParsingError {
         // Check if the type casting has any errors
         if value is error {
@@ -185,6 +284,12 @@ class Parser {
             structure[tomlKey] = tomlValue;
             return structure;
         }
+    }
+
+    private function initLexer() {
+        self.lexer.line = self.lines[self.lineIndex];
+        self.lexer.index = 0;
+        self.lexer.lineNumber = self.lineIndex;
     }
 
     # Generates a Parsing Error Error.
