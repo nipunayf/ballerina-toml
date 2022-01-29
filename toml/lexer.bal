@@ -33,10 +33,8 @@ class Lexer {
     # + return - If success, returns a token, else returns a Lexical Error 
     function getToken() returns Token|error {
 
-        // Reset the parameters at the end of the line.
+        // Generate EOL token 
         if (self.index >= self.line.length()) {
-            // self.index = 0;
-            // self.line = "";
             return {token: EOL};
         }
 
@@ -116,23 +114,34 @@ class Lexer {
                         self.lexeme = "0b";
                         return check self.iterate(self.digit(BINARY_DIGIT_PATTERN), INTEGER);
                     }
-                    ()|" "|"#" => { // Decimal numbers
+                    ()|" "|"#"|"." => { // Decimal numbers
                         self.lexeme = "0";
                         return self.generateToken(INTEGER);
                     }
                     _ => {
-                        return self.generateError("Invalid character " + self.line[self.index + 1] + "after '0'", self.index + 1);
+                        return self.generateError("Invalid character '" + self.line[self.index + 1] + "' after '0'", self.index + 1);
                     }
                 }
             }
             "+"|"-" => { // Decimal numbers
                 match self.peek(1) {
                     "0" => { // There cannot be leading zero.
-                        self.lexeme = "0";
+                        self.lexeme = self.line[self.index] + "0";
+                        self.index += 1;
                         return self.generateToken(INTEGER);
                     }
                     () => { // Only '+' and '-' are invalid.
                         return self.generateError("There must me digits after '+'", self.index + 1);
+                    }
+                    "n" => { // NAN token
+                        self.lexeme = self.line[self.index];
+                        self.index += 1;
+                        return check self.tokensInSequence("nan", NAN);
+                    }
+                    "i" => {
+                        self.lexeme = self.line[self.index];
+                        self.index += 1;
+                        return check self.tokensInSequence("inf", INFINITY);
                     }
                     _ => { // Remaining digits of the decimal numbers
                         self.lexeme = self.line[self.index];
@@ -147,6 +156,16 @@ class Lexer {
             "f" => { // Boolean false token
                 return check self.tokensInSequence("false", BOOLEAN);
             }
+            "n" => { // NAN token
+                return check self.tokensInSequence("nan", NAN);
+            }
+            "i" => {
+                self.lexeme = "+";
+                return check self.tokensInSequence("inf", INFINITY);
+            }
+            "e"|"E" => {
+                return self.generateToken(EXPONENTIAL);
+            }
         }
 
         // Check for values starting with an integer.
@@ -154,7 +173,6 @@ class Lexer {
             return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), INTEGER);
         }
 
-        //TODO: Generate a lexical error when none of the characters are found.
         return self.generateError("Invalid character '" + self.line[self.index] + "'", self.index);
     }
 
@@ -184,10 +202,12 @@ class Lexer {
             if (self.line[i] == "\"") {
                 self.index = i;
                 if (self.peek(1) == "\"" && self.peek(2) == "\"") {
-                    
-                    // Check if the double quotes are in the end of the line
+
+                    // Check if the double quotes are at the end of the line
                     if (self.peek(3) == "\"" && self.peek(4) == "\"") {
-                        
+                        self.lexeme += "\"\"";
+                        self.index = i + 1;
+                        return true;
                     }
 
                     self.index = i - 1;
@@ -240,7 +260,7 @@ class Lexer {
                 self.index = i;
                 if (self.peek(1) == "'" && self.peek(2) == "'") {
 
-                     // Check if the double quotes are at the end of the line
+                    // Check if the double quotes are at the end of the line
                     if (self.peek(3) == "'" && self.peek(4) == "'") {
                         self.lexeme += "''";
                         self.index = i + 1;
@@ -298,12 +318,18 @@ class Lexer {
                         }
                         // check if the next character is a digit
                         if (regex:matches(<string>nextChr, digitPattern)) {
-                            self.lexeme += "_";
                             return false;
                         }
                         return self.generateError("Invalid character \"" + self.line[i] + "\" after '_'", i);
                     }
                     return self.generateError("Invalid character \"" + self.line[i] + "\" after '='", i);
+                }
+
+                // Float number allows only a decimal number a prefix.
+                // Check for decimal points and exponentials in decimal numbers
+                if (digitPattern == DECIMAL_DIGIT_PATTERN && (self.line[i] == "." || self.line[i] == "e" || self.line[i] == "E")) {
+                    self.index = i - 1;
+                    return true;
                 }
 
                 return self.generateError("Invalid character \"" + self.line[i] + "\" for an integer", i);
@@ -357,7 +383,7 @@ class Lexer {
             }
             self.index += 1;
         }
-        self.lexeme = chars;
+        self.lexeme += chars;
         return self.generateToken(successToken);
     }
 
