@@ -9,20 +9,23 @@ class Parser {
     private int numLines;
     private int lineIndex;
 
-    # Output TOML object
-    private map<anydata> tomlObject;
-
     # Current token
     private Token currentToken;
-
-    # Next token
-    private Token nextToken;
 
     # Hold the lexemes until the final value is generated
     private string lexemeBuffer;
 
-    # Final value of the key currently processing
-    private anydata value;
+    # Output TOML object
+    private map<anydata> tomlObject;
+
+    # Current map structure the parser is working on
+    private map<anydata> currentStructure;
+
+    # Key stack to the current structure
+    private string[] keyStack;
+
+    # Already defined table keys
+    private string[] definedTableKeys;
 
     # Lexical analyzer tool for getting the tokens
     private Lexer lexer;
@@ -30,13 +33,14 @@ class Parser {
     function init(string[] lines) {
         self.lines = lines;
         self.numLines = lines.length();
-        self.tomlObject = {};
         self.lexer = new Lexer();
         self.currentToken = {token: DUMMY};
-        self.nextToken = {token: DUMMY};
+        self.tomlObject = {};
+        self.currentStructure = {};
+        self.keyStack = [];
+        self.definedTableKeys = [];
         self.lineIndex = 0;
         self.lexemeBuffer = "";
-        self.value = ();
     }
 
     # Generates a map object for the TOML document.
@@ -56,21 +60,20 @@ class Parser {
 
             match self.currentToken.token {
                 UNQUOTED_KEY|BASIC_STRING|LITERAL_STRING => { // Process a key value
-
-                    map<anydata> output = check self.keyValue(
-                        self.tomlObject.hasKey(self.currentToken.value),
-                        self.tomlObject);
-
-                    // Add the key-value pair to the final TOML object.
-                    string tomlKey = output.keys()[0];
-                    self.tomlObject[tomlKey] = output[tomlKey];
-
+                    self.currentStructure = check self.keyValue(self.currentStructure.clone());
                     self.lexer.state = EXPRESSION_KEY;
                     self.lexemeBuffer = "";
-                    self.value = "";
                 }
-                // TODO: Add support for tables
-                // TODO: Add support for table arrays
+                OPEN_BRACKET => { // Process a standard tale
+                    // Add the previous table to the TOML object
+                    self.tomlObject = check self.buildTOMLObject(self.tomlObject.clone());
+
+                    check self.checkToken([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '[' in a table key");
+                    check self.standardTable(self.tomlObject.clone());
+                }
+                DOUBLE_OPEN_BRACKET => { // Process an array table
+
+                }
             }
 
             // Comments and new lines are ignored.
@@ -83,6 +86,7 @@ class Parser {
         }
 
         // Return the TOML object
+        self.tomlObject = check self.buildTOMLObject(self.tomlObject.clone());
         return self.tomlObject;
     }
 
@@ -113,25 +117,20 @@ class Parser {
     # At the terminal, a value is assigned to the last key, 
     # and nested under the previous key's map if exists.
     #
-    # + alreadyExists - There is an existing value for the previous key.
     # + structure - The structure for the previous key. Null if there is no value.
     # + return - Returns the structure after assigning the value.
-    private function keyValue(boolean alreadyExists, map<anydata>? structure) returns map<anydata>|error {
+    private function keyValue(map<anydata> structure) returns map<anydata>|error {
         string tomlKey = self.currentToken.value;
+        check self.verifyKey(structure, tomlKey);
 
         check self.checkToken([DOT, KEY_VALUE_SEPERATOR], "Expected a '.' or a '=' after a key");
 
         match self.currentToken.token {
             DOT => {
                 check self.checkToken([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '.'");
-
-                map<anydata> value = check self.keyValue(
-                    // If the structure exists and already assigned a value that is not a table,
-                    // Then it is invalid to assign a value to it or nested to it.
-                    (structure is map<anydata> ? (<map<anydata>>structure).hasKey(tomlKey) : structure != () && alreadyExists),
-                    structure[tomlKey] is map<anydata> ? <map<anydata>?>structure[tomlKey] : ()
-                    );
-                return self.buildInternalTable(tomlKey, value, structure);
+                map<anydata> value = check self.keyValue(structure[tomlKey] is map<anydata> ? <map<anydata>>structure[tomlKey] : {});
+                structure[tomlKey] = value;
+                return structure;
             }
 
             KEY_VALUE_SEPERATOR => {
@@ -143,21 +142,32 @@ class Parser {
                     MULTI_BSTRING_DELIMITER,
                     MULTI_LSTRING_DELIMITER,
                     INTEGER,
-                    ARRAY_START,
+                    OPEN_BRACKET,
                     BOOLEAN
                 ], "Expected a value after '='");
 
-                self.value = check self.dataValue();
+                structure[tomlKey] = check self.dataValue();
+                return structure;
 
-                if (structure is map<anydata> ? (<map<anydata>>structure).hasKey(tomlKey)
-                : structure != () ? alreadyExists : true && alreadyExists) {
-                    return self.generateError("Duplicate key '" + tomlKey + "'");
-                } else {
-                    return self.buildInternalTable(tomlKey, self.value, structure);
-                }
             }
             _ => {
                 return self.generateError("Expected a '.' or a '=' after a key");
+            }
+        }
+    }
+
+    # If the structure exists and already assigned a value that is not a table,
+    # then it is invalid to assign a value to it or nested to it.
+    #
+    # + structure - Structure which the key should exist in  
+    # + key - Key to be verified in the structure  
+    # + return - Error, if there already exists a non-table value
+    private function verifyKey(map<anydata>? structure, string key) returns error? {
+        if (structure is map<anydata>) {
+            map<anydata> castedStructure = <map<anydata>>structure;
+            if (castedStructure.hasKey(key) && !(castedStructure[key] is map<anydata>)) {
+                // TODO: Improve the error message by stacking the parents
+                return self.generateError("Duplicate values exists");
             }
         }
     }
@@ -179,7 +189,7 @@ class Parser {
             BOOLEAN => {
                 returnData = check self.processTypeCastingError('boolean:fromString(self.currentToken.value));
             }
-            ARRAY_START => {
+            OPEN_BRACKET => {
                 returnData = check self.array();
             }
             _ => {
@@ -187,7 +197,6 @@ class Parser {
             }
         }
         self.lexemeBuffer = "";
-        self.value = "";
         return returnData;
     }
 
@@ -272,10 +281,10 @@ class Parser {
     # + return - Parsing error if occurred
     private function number(boolean fractional = false) returns anydata|error {
         self.lexemeBuffer += self.currentToken.value;
-        check self.checkToken([EOL, EXPONENTIAL, DOT, ARRAY_SEPARATOR, ARRAY_END], "Invalid token after an integer");
+        check self.checkToken([EOL, EXPONENTIAL, DOT, ARRAY_SEPARATOR, CLOSE_BRACKET], "Invalid token after an integer");
 
         match self.currentToken.token {
-            EOL|ARRAY_SEPARATOR|ARRAY_END => { // Generate the final number
+            EOL|ARRAY_SEPARATOR|CLOSE_BRACKET => { // Generate the final number
                 return fractional ? check self.processTypeCastingError('float:fromString(self.lexemeBuffer))
                                         : check self.processTypeCastingError('int:fromString(self.lexemeBuffer));
             }
@@ -307,8 +316,8 @@ class Parser {
             MULTI_LSTRING_DELIMITER,
             INTEGER,
             BOOLEAN,
-            ARRAY_START,
-            ARRAY_END,
+            OPEN_BRACKET,
+            CLOSE_BRACKET,
             EOL,
             ARRAY_SEPARATOR
         ], "Expected a value after '='");
@@ -320,19 +329,19 @@ class Parser {
                 }
                 return self.generateError("Exptected ']' at the end of an array");
             }
-            ARRAY_END => { // If the array ends with a ','
+            CLOSE_BRACKET => { // If the array ends with a ','
                 return tempArray;
             }
             INTEGER => { // Tokens that have consumed the next token
                 tempArray.push(check self.dataValue());
-                return self.currentToken.token == ARRAY_END ? tempArray : self.array(tempArray, false);
+                return self.currentToken.token == CLOSE_BRACKET ? tempArray : self.array(tempArray, false);
             }
             _ => { // Array value
                 tempArray.push(check self.dataValue());
-                check self.checkToken([ARRAY_SEPARATOR, ARRAY_END], "Expected an ',' or ']' after an array value");
+                check self.checkToken([ARRAY_SEPARATOR, CLOSE_BRACKET], "Expected an ',' or ']' after an array value");
 
                 match self.currentToken.token {
-                    ARRAY_END => { // End of the array value
+                    CLOSE_BRACKET => { // End of the array value
                         return tempArray;
                     }
                     ARRAY_SEPARATOR => { // Expects another array value
@@ -344,6 +353,58 @@ class Parser {
                 }
             }
         }
+    }
+
+    private function standardTable(map<anydata> structure, string keyName = "") returns error? {
+
+        // Establish the current structure
+        string tomlKey = self.currentToken.value;
+        self.keyStack.push(tomlKey);
+        check self.verifyKey(structure, tomlKey);
+
+        check self.checkToken([DOT, CLOSE_BRACKET], "Expected '.' or ']' after a table key");
+
+        match self.currentToken.token {
+            DOT => { // Build the dotted key
+                check self.checkToken([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '.' in a table key");
+                return check self.standardTable(structure[tomlKey] is map<anydata> ? <map<anydata>>structure[tomlKey] : {}, tomlKey + ".");
+            }
+
+            CLOSE_BRACKET => { // Initialize the current structure
+
+                // Check if the table key is already defined
+                string tableKeyName = keyName + tomlKey;
+                if (self.definedTableKeys.indexOf(tableKeyName) != ()) {
+                    return self.generateError("Duplicate table key '" + tableKeyName + "'");
+                } else {
+                    self.definedTableKeys.push(tableKeyName);
+                }
+
+                self.currentStructure = structure[tomlKey] is map<anydata> ? <map<anydata>>structure[tomlKey] : {};
+                return;
+            }
+        }
+
+    }
+
+    private function buildTOMLObject(map<anydata> structure) returns map<anydata>|error {
+        // Under the root table
+        if (self.keyStack.length() == 0) {
+            return self.currentStructure;
+        }
+
+        // First key table
+        if (self.keyStack.length() == 1) {
+            string key = self.keyStack.pop();
+            structure[key] = self.currentStructure;
+            return structure;
+        }
+
+        // Dotted tables
+        string key = self.keyStack.shift();
+        map<anydata> value = check self.buildTOMLObject(structure[key] is map<anydata> ? <map<anydata>>structure[key] : {});
+        structure[key] = value;
+        return structure;
     }
 
     # Check errors during type casting to Ballerina types.
@@ -358,28 +419,6 @@ class Parser {
 
         // Returns the value on success
         return value;
-    }
-
-    # Constructs the internal table of the TOML object.
-    #
-    # + tomlKey - New key of the TOML object  
-    # + tomlValue - Value of the key  
-    # + structure - Already existing internal table
-    # + return - Constructed inner table. 
-    private function buildInternalTable(string tomlKey, anydata tomlValue, map<anydata>? structure) returns map<anydata> {
-
-        // Creates a new structure and add the key value
-        if (structure == ()) {
-            map<anydata> returnValue = {};
-            returnValue[tomlKey] = tomlValue;
-            return returnValue;
-        }
-        
-        // Add the key to the existing strcuture
-        else {
-            structure[tomlKey] = tomlValue;
-            return structure;
-        }
     }
 
     private function initLexer(boolean incrementLine = true) returns boolean {
