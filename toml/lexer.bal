@@ -61,7 +61,7 @@ class Lexer {
         }
 
         match self.line[self.index] {
-            " " => { // Whitespace
+            " "|"\t" => { // Whitespace
                 self.index += 1;
                 return check self.getToken();
             }
@@ -73,14 +73,16 @@ class Lexer {
                 return self.generateToken(KEY_VALUE_SEPERATOR);
             }
             "[" => {
-                if (self.peek(1) == "[") {
-                    return self.generateToken(DOUBLE_OPEN_BRACKET);    
+                if (self.peek(1) == "[" && self.state == EXPRESSION_KEY) {
+                    self.index += 1;
+                    return self.generateToken(ARRAY_TABLE_OPEN);    
                 }
                 return self.generateToken(OPEN_BRACKET);
             }
             "]" => {
-                if (self.peek(1) == "]") {
-                    return self.generateToken(DOUBLE_CLOSE_BRACKET);
+                if (self.peek(1) == "]" && self.state == EXPRESSION_KEY) {
+                    self.index += 1;
+                    return self.generateToken(ARRAY_TABLE_CLOSE);
                 }
                 return self.generateToken(CLOSE_BRACKET);
             }
@@ -348,13 +350,14 @@ class Lexer {
 
                 // Float number allows only a decimal number a prefix.
                 // Check for decimal points and exponentials in decimal numbers.
-                // Check for array separators and array end symbol.
+                // Check for separators and end symbols.
                 if (digitPattern == DECIMAL_DIGIT_PATTERN && (
                                 self.line[i] == "." ||
                                 self.line[i] == "e" ||
                                 self.line[i] == "E" ||
                                 self.line[i] == "," ||
-                                self.line[i] == "]")) {
+                                self.line[i] == "]" ||
+                                self.line[i] == "}")) {
                     self.index = i - 1;
                     return true;
                 }

@@ -33,6 +33,8 @@ class Parser {
     # Buffers the key in the full format
     private string bufferedKey;
 
+    private boolean isArrayTable;
+
     # Lexical analyzer tool for getting the tokens
     private Lexer lexer;
 
@@ -47,6 +49,7 @@ class Parser {
         self.definedTableKeys = [];
         self.tokenConsumed = false;
         self.bufferedKey = "";
+        self.isArrayTable = false;
         self.lineIndex = 0;
         self.lexemeBuffer = "";
     }
@@ -75,12 +78,17 @@ class Parser {
                 OPEN_BRACKET => { // Process a standard tale
                     // Add the previous table to the TOML object
                     self.tomlObject = check self.buildTOMLObject(self.tomlObject.clone());
+                    self.isArrayTable = false;
 
                     check self.checkToken([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '[' in a table key");
                     check self.standardTable(self.tomlObject.clone());
                 }
-                DOUBLE_OPEN_BRACKET => { // Process an array table
+                ARRAY_TABLE_OPEN => { // Process an array table
+                    self.tomlObject = check self.buildTOMLObject(self.tomlObject.clone());
+                    self.isArrayTable = true;
 
+                    check self.checkToken([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '[[' in a table key");
+                    check self.arrayTable(self.tomlObject.clone());
                 }
             }
 
@@ -181,14 +189,14 @@ class Parser {
     private function verifyKey(map<anydata>? structure, string key) returns error? {
         if (structure is map<anydata>) {
             map<anydata> castedStructure = <map<anydata>>structure;
-            if (castedStructure.hasKey(key) && !(castedStructure[key] is map<anydata>)) {
+            if (castedStructure.hasKey(key) && !(castedStructure[key] is anydata[] || castedStructure[key] is map<anydata>)) {
                 // TODO: Improve the error message by stacking the parents
                 return self.generateError("Duplicate values exists");
             }
         }
     }
 
-    private function verifyTableKey(string tableKeyName) returns error?{
+    private function verifyTableKey(string tableKeyName) returns error? {
         if (self.definedTableKeys.indexOf(tableKeyName) != ()) {
             return self.generateError("Duplicate table key '" + tableKeyName + "'");
         }
@@ -213,11 +221,17 @@ class Parser {
             }
             OPEN_BRACKET => {
                 returnData = check self.array();
+                if (!self.isArrayTable) {
+                    self.definedTableKeys.push(self.bufferedKey);
+                    self.bufferedKey = "";
+                }
             }
             INLINE_TABLE_OPEN => {
                 returnData = check self.inlineTable();
-                self.definedTableKeys.push(self.bufferedKey);
-                self.bufferedKey = "";
+                if (!self.isArrayTable) {
+                    self.definedTableKeys.push(self.bufferedKey);
+                    self.bufferedKey = "";
+                }
             }
             _ => {
                 returnData = self.currentToken.value;
@@ -347,8 +361,7 @@ class Parser {
             OPEN_BRACKET,
             CLOSE_BRACKET,
             INLINE_TABLE_OPEN,
-            EOL,
-            ARRAY_SEPARATOR
+            EOL
         ], "Expected a value or ']' after '['");
 
         match self.currentToken.token {
@@ -363,14 +376,34 @@ class Parser {
             }
             _ => { // Array value
                 tempArray.push(check self.dataValue());
+                return self.arrayValue(tempArray);
+            }
+        }
+    }
 
-                if (self.tokenConsumed) {
-                    self.tokenConsumed = false;
-                } else {
-                    check self.checkToken([ARRAY_SEPARATOR, CLOSE_BRACKET], "Expected an ',' or ']' after an array value");
+    private function arrayValue(anydata[] tempArray = []) returns anydata[]|error {
+        if (self.tokenConsumed) {
+            self.tokenConsumed = false;
+        } else {
+            check self.checkToken([ // TODO: add the remaning values
+                EOL,
+                CLOSE_BRACKET,
+                ARRAY_SEPARATOR
+            ], "Expected a value or ']' after '['");
+        }
+
+        match self.currentToken.token {
+            EOL => {
+                if (self.initLexer()) {
+                    return self.arrayValue(tempArray);
                 }
-
-                return self.currentToken.token == CLOSE_BRACKET ? tempArray : self.array(tempArray);
+                return self.generateError("Expected ']' or ',' after an array value");
+            }
+            CLOSE_BRACKET => {
+                return tempArray;
+            }
+            _ => { // Array separator
+                return self.array(tempArray);
             }
         }
     }
@@ -417,7 +450,7 @@ class Parser {
         match self.currentToken.token {
             DOT => { // Build the dotted key
                 check self.checkToken([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '.' in a table key");
-                return check self.standardTable(structure[tomlKey] is map<anydata> ? <map<anydata>>structure[tomlKey] : {}, tomlKey + ".");
+                return check self.standardTable(structure[tomlKey] is map<anydata> ? <map<anydata>>structure[tomlKey] : {}, keyName + tomlKey + ".");
             }
 
             CLOSE_BRACKET => { // Initialize the current structure
@@ -427,11 +460,43 @@ class Parser {
                 check self.verifyTableKey(tableKeyName);
                 self.definedTableKeys.push(tableKeyName);
 
+                if (structure.hasKey(tomlKey) && !(structure[tomlKey] is map<anydata>)) {
+                    return self.generateError("Already defined an array table for '" + tomlKey + "'");
+                }
+
                 self.currentStructure = structure[tomlKey] is map<anydata> ? <map<anydata>>structure[tomlKey] : {};
                 return;
             }
         }
 
+    }
+
+    private function arrayTable(map<anydata> structure, string keyName = "") returns error? {
+        string tomlKey = self.currentToken.value;
+        self.keyStack.push(tomlKey);
+        check self.verifyKey(structure, tomlKey);
+
+        check self.checkToken([DOT, ARRAY_TABLE_CLOSE], "Expected '.' or ']]' after a array table key");
+
+        match self.currentToken.token {
+            DOT => { // Build the dotted key
+                check self.checkToken([UNQUOTED_KEY, BASIC_STRING, LITERAL_STRING], "Expected a key after '.' in a table key");
+                return check self.arrayTable(structure[tomlKey] is map<anydata> ? <map<anydata>>structure[tomlKey] : {}, tomlKey + ".");
+            }
+
+            ARRAY_TABLE_CLOSE => { // Initialize the current structure
+
+                // Check if there is an static array or a standard table key aready defined
+                check self.verifyTableKey(keyName + tomlKey);
+
+                if (structure.hasKey(tomlKey) && !(structure[tomlKey] is anydata[])) {
+                    return self.generateError("Cannot define an array table for a standard table defined by '" + tomlKey + "'");
+                }
+
+                self.currentStructure = {};
+                return;
+            }
+        }
     }
 
     private function buildTOMLObject(map<anydata> structure) returns map<anydata>|error {
@@ -443,14 +508,35 @@ class Parser {
         // First key table
         if (self.keyStack.length() == 1) {
             string key = self.keyStack.pop();
-            structure[key] = self.currentStructure;
+            if (self.isArrayTable) {
+                if (structure[key] is anydata[]) {
+                    (<anydata[]>structure[key]).push(self.currentStructure.clone());
+                } else {
+                    structure[key] = [self.currentStructure.clone()];
+                }
+            } else {
+                structure[key] = self.currentStructure;
+            }
             return structure;
         }
 
         // Dotted tables
         string key = self.keyStack.shift();
-        map<anydata> value = check self.buildTOMLObject(structure[key] is map<anydata> ? <map<anydata>>structure[key] : {});
-        structure[key] = value;
+        map<anydata> value;
+
+        if (structure[key] is map<anydata>) {
+            value = check self.buildTOMLObject(<map<anydata>>structure[key]);
+            structure[key] = value;
+        }
+        else if (structure[key] is anydata[]) {
+            value = check self.buildTOMLObject(<map<anydata>>(<anydata[]>structure[key]).pop());
+            (<anydata[]>structure[key]).push(value);
+        }
+        else {
+            value = check self.buildTOMLObject({});
+            structure[key] = value;
+        }
+
         return structure;
     }
 

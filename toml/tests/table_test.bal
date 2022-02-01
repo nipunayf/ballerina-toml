@@ -3,10 +3,10 @@ import ballerina/test;
 @test:Config {}
 function testDoubleBracketTerminalTokens() returns error? {
     Lexer lexer = setLexerString("[[");
-    check assertToken(lexer, DOUBLE_OPEN_BRACKET);
+    check assertToken(lexer, ARRAY_TABLE_OPEN);
 
     lexer = setLexerString("]]");
-    check assertToken(lexer, DOUBLE_CLOSE_BRACKET);
+    check assertToken(lexer, ARRAY_TABLE_CLOSE);
 }
 
 @test:Config {}
@@ -97,4 +97,9 @@ function testSeparatorBeforeInlineTableTerminal() {
 @test:Config {}
 function testRedefineSuperTable() {
     assertParsingError("inline_redefine_super_table", true);
+}
+
+@test:Config {}
+function testTableRedefineArrayTable() {
+    assertParsingError("table_redefine_array_table", true);
 }
