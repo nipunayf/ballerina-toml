@@ -60,6 +60,30 @@ class Lexer {
             return self.iterate(self.multilineLiteralString, MULTI_LSTRING_CHARS);
         }
 
+        if (self.state == NUMBER) {
+            match self.line[self.index] {
+                ":" => {
+                    return self.generateToken(COLON);
+                }
+                "-" => {
+                    return self.generateToken(MINUS);
+                }
+                "t"|"T"|" " => {
+                    return self.generateToken(TIME_DELIMITER);
+                }
+                "+" => {
+                    return self.generateToken(PLUS);
+                }
+                "Z" => {
+                    return self.generateToken(ZULU);
+                }
+            }
+
+            if (regex:matches(self.line[self.index], DECIMAL_DIGIT_PATTERN)) {
+                return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), DECIMAL);
+            }
+        }
+
         match self.line[self.index] {
             " "|"\t" => { // Whitespace
                 self.index += 1;
@@ -75,7 +99,7 @@ class Lexer {
             "[" => {
                 if (self.peek(1) == "[" && self.state == EXPRESSION_KEY) {
                     self.index += 1;
-                    return self.generateToken(ARRAY_TABLE_OPEN);    
+                    return self.generateToken(ARRAY_TABLE_OPEN);
                 }
                 return self.generateToken(OPEN_BRACKET);
             }
@@ -115,25 +139,33 @@ class Lexer {
                 return self.generateToken(DOT);
             }
             "0" => {
-                match self.peek(1) {
+                string? peekValue = self.peek(1);
+                if (peekValue == ()) {
+                    self.lexeme = "0";
+                    return self.generateToken(DECIMAL);
+                }
+
+                if (regex:matches(peekValue, DECIMAL_DIGIT_PATTERN)) {
+                    self.state = NUMBER;
+                    return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), DECIMAL);
+                }
+
+                match peekValue {
                     "x" => { // Hexadecimal numbers
                         self.index += 2;
-                        self.lexeme = "0x";
-                        return check self.iterate(self.digit(HEXADECIMAL_DIGIT_PATTERN), INTEGER);
+                        return check self.iterate(self.digit(HEXADECIMAL_DIGIT_PATTERN), HEXADECIMAL);
                     }
                     "o" => { // Octal numbers
                         self.index += 2;
-                        self.lexeme = "0o";
-                        return check self.iterate(self.digit(OCTAL_DIGIT_PATTERN), INTEGER);
+                        return check self.iterate(self.digit(OCTAL_DIGIT_PATTERN), OCTAL);
                     }
                     "b" => { // Binary numbers
                         self.index += 2;
-                        self.lexeme = "0b";
-                        return check self.iterate(self.digit(BINARY_DIGIT_PATTERN), INTEGER);
+                        return check self.iterate(self.digit(BINARY_DIGIT_PATTERN), BINARY);
                     }
-                    ()|" "|"#"|"."|","|"]" => { // Decimal numbers
+                    " "|"#"|"."|","|"]" => { // Decimal numbers
                         self.lexeme = "0";
-                        return self.generateToken(INTEGER);
+                        return self.generateToken(DECIMAL);
                     }
                     _ => {
                         return self.generateError("Invalid character '" + self.line[self.index + 1] + "' after '0'", self.index + 1);
@@ -145,7 +177,7 @@ class Lexer {
                     "0" => { // There cannot be leading zero.
                         self.lexeme = self.line[self.index] + "0";
                         self.index += 1;
-                        return self.generateToken(INTEGER);
+                        return self.generateToken(DECIMAL);
                     }
                     () => { // Only '+' and '-' are invalid.
                         return self.generateError("There must me digits after '+'", self.index + 1);
@@ -163,7 +195,7 @@ class Lexer {
                     _ => { // Remaining digits of the decimal numbers
                         self.lexeme = self.line[self.index];
                         self.index += 1;
-                        return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), INTEGER);
+                        return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), DECIMAL);
                     }
                 }
             }
@@ -191,9 +223,9 @@ class Lexer {
             }
         }
 
-        // Check for values starting with an integer.
-        if (self.state == EXPRESSION_VALUE && regex:matches(self.line[self.index], DECIMAL_DIGIT_PATTERN)) {
-            return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), INTEGER);
+        // Check for values starting with an DECIMAL.
+        if ((self.state == EXPRESSION_VALUE || self.state == NUMBER) && regex:matches(self.line[self.index], DECIMAL_DIGIT_PATTERN)) {
+            return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), DECIMAL);
         }
 
         return self.generateError("Invalid character '" + self.line[self.index] + "'", self.index);
@@ -308,7 +340,7 @@ class Lexer {
     # + return - True if the end of the key, An error message for an invalid character.  
     private function unquotedKey(int i) returns boolean|LexicalError {
         if (!regex:matches(self.line[i], UNQUOTED_STRING_PATTERN)) {
-            if (self.line[i] == " " || self.line[i] == "." || self.line[i] == "]" || self.line[i] == "=") {
+            if (self.checkCharacter([" ", ".", "]", "="], i)) {
                 self.index = i - 1;
                 return true;
             }
@@ -318,7 +350,7 @@ class Lexer {
         return false;
     }
 
-    # Check for the lexems to crete an integer token.
+    # Check for the lexems to crete an DECIMAL token.
     #
     # + digitPattern - Regex pattern of the number system
     # + return - Generates a function which checks the lexems for the given number system.  
@@ -351,18 +383,21 @@ class Lexer {
                 // Float number allows only a decimal number a prefix.
                 // Check for decimal points and exponentials in decimal numbers.
                 // Check for separators and end symbols.
-                if (digitPattern == DECIMAL_DIGIT_PATTERN && (
-                                self.line[i] == "." ||
-                                self.line[i] == "e" ||
-                                self.line[i] == "E" ||
-                                self.line[i] == "," ||
-                                self.line[i] == "]" ||
-                                self.line[i] == "}")) {
-                    self.index = i - 1;
+                if (digitPattern == DECIMAL_DIGIT_PATTERN) {
+                    if (self.checkCharacter([".", "e", "E", ",", "]", "}"], i)) {
+                        self.index = i - 1;
+                    }
+                    if (self.checkCharacter(["-", ":"], i)) {
+                        self.index = i - 1;
+                        self.state = NUMBER;
+                    }
+                    if (self.state == NUMBER && self.checkCharacter(["-", ":", "t", "T", "+", "-", "Z"], i)) {
+                        self.index = i - 1;
+                    }
                     return true;
                 }
 
-                return self.generateError("Invalid character \"" + self.line[i] + "\" for an integer", i);
+                return self.generateError("Invalid character \"" + self.line[i] + "\" for an DECIMAL", i);
             }
             self.lexeme += self.line[i];
             return false;
@@ -393,7 +428,7 @@ class Lexer {
     }
 
     # Peeks the character succeeding after k indexes. 
-    # Returns the character after k integers
+    # Returns the character after k DECIMALs
     #
     # + k - Number of characters to peek
     # + return - Character at the peek if not null  
@@ -418,6 +453,18 @@ class Lexer {
         return self.generateToken(successToken);
     }
 
+    # Assert the character of the current index
+    #
+    # + expectedCharacters - Expected characters at the current index
+    # + return - True if the assertion is true
+    private function checkCharacter(string|string[] expectedCharacters, int? index) returns boolean {
+        if (expectedCharacters is string) {
+            return expectedCharacters == self.line[index == () ? self.index : index];
+        } else if (expectedCharacters.indexOf(self.line[index == () ? self.index : index]) == ()) {
+            return false;
+        }
+        return true;
+    }
     # Generates a Lexical Error.
     #
     # + message - Error message  

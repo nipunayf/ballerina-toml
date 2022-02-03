@@ -1,5 +1,7 @@
 import ballerina/lang.'int;
+import ballerina/lang.'float;
 import ballerina/lang.'boolean;
+import ballerina/time;
 
 type ParsingError distinct error;
 
@@ -111,8 +113,12 @@ class Parser {
     # + expectedTokens - Predicted token or tokens
     # + errorMessage - Parsing error if expected token not found  
     # + return - Parsing error if not found
-    private function checkToken(TOMLToken|TOMLToken[] expectedTokens, string errorMessage) returns error? {
+    private function checkToken(TOMLToken|TOMLToken[] expectedTokens = DUMMY, string errorMessage = "") returns error? {
         self.currentToken = check self.lexer.getToken();
+
+        if (expectedTokens == DUMMY) {
+            return;
+        }
 
         // Generate an error if the expected token differ from the actual token.
         if (expectedTokens is TOMLToken) {
@@ -159,7 +165,10 @@ class Parser {
                     LITERAL_STRING,
                     MULTI_BSTRING_DELIMITER,
                     MULTI_LSTRING_DELIMITER,
-                    INTEGER,
+                    DECIMAL,
+                    BINARY,
+                    OCTAL,
+                    HEXADECIMAL,
                     OPEN_BRACKET,
                     BOOLEAN,
                     INLINE_TABLE_OPEN
@@ -213,8 +222,17 @@ class Parser {
                 check self.multiLiteralString();
                 returnData = self.lexemeBuffer;
             }
-            INTEGER => {
+            DECIMAL => {
                 returnData = check self.number();
+            }
+            HEXADECIMAL => {
+                returnData = check self.processTypeCastingError('int:fromHexString(self.currentToken.value));
+            }
+            BINARY => {
+                returnData = check self.processInteger(2);
+            }
+            OCTAL => {
+                returnData = check self.processInteger(8);
             }
             BOOLEAN => {
                 returnData = check self.processTypeCastingError('boolean:fromString(self.currentToken.value));
@@ -316,22 +334,25 @@ class Parser {
         self.lexer.state = EXPRESSION_KEY;
     }
 
-    # Handles the grammar rules of integers and float numbers.
+    # Handles the grammar rules of DECIMALs and float numbers.
     #
     # + fractional - Flag is set when processing the fractional segment
     # + return - Parsing error if occurred
     private function number(boolean fractional = false) returns anydata|error {
         self.lexemeBuffer += self.currentToken.value;
-        check self.checkToken([EOL, EXPONENTIAL, DOT, ARRAY_SEPARATOR, CLOSE_BRACKET, INLINE_TABLE_CLOSE], "Invalid token after an integer");
+        check self.checkToken();
 
         match self.currentToken.token {
             EOL|ARRAY_SEPARATOR|CLOSE_BRACKET|INLINE_TABLE_CLOSE => { // Generate the final number
                 self.tokenConsumed = true;
+                if (self.lexemeBuffer.length() > 1 && self.lexemeBuffer[0] == "0") {
+                    return self.generateError("Cannot have leading 0's in integers or floats");
+                }
                 return fractional ? check self.processTypeCastingError('float:fromString(self.lexemeBuffer))
                                         : check self.processTypeCastingError('int:fromString(self.lexemeBuffer));
             }
             EXPONENTIAL => { // Handles exponential numbers
-                check self.checkToken(INTEGER, "Expected an integer after the exponential");
+                check self.checkToken(DECIMAL, "Expected an DECIMAL after the exponential");
 
                 // Evaluating the exponential value
                 float exponent = <float>(check self.processTypeCastingError('float:fromString(self.currentToken.value)));
@@ -342,9 +363,138 @@ class Parser {
                 if (fractional) {
                     return self.generateError("Cannot have a decimal point in the fraction part");
                 }
-                check self.checkToken(INTEGER, "Expected an integer after the decimal point");
+                check self.checkToken(DECIMAL, "Expected an DECIMAL after the decimal point");
                 self.lexemeBuffer += ".";
                 return check self.number(true);
+            }
+            MINUS => {
+                self.lexer.state = NUMBER;
+                return check self.date();
+            }
+            COLON => {
+                self.lexer.state = NUMBER;
+                return check self.time(self.lexemeBuffer);
+            }
+            _ => {
+                return self.generateError("Invalid token after an decimal integer");
+            }
+        }
+    }
+
+    private function checkTime(string value, int lowerBound, int upperBound, string valueName) returns error? {
+        if (value.length() != 2) {
+            return self.generateError("Expected number of digits in " + valueName + " to be 2");
+        }
+        int intValue = <int>check self.processTypeCastingError('int:fromString(value));
+        if (intValue < lowerBound || intValue > upperBound) {
+            return self.generateError("Expected " + valueName + " to be between " + lowerBound.toString() + "-" + upperBound.toString());
+        }
+    }
+
+    private function time(string hours, boolean datePrefixed = false) returns anydata|error {
+        check self.checkTime(hours, 0, 24, "hours");
+
+        check self.checkToken(DECIMAL, "Expected 2 digit minutes after ':'");
+        check self.checkTime(self.currentToken.value, 0, 60, "minutes");
+        self.lexemeBuffer += ":" + self.currentToken.value;
+
+        check self.checkToken(COLON, "Expected a ':' after minutes");
+        check self.checkToken(DECIMAL, "Expected a 2 digit seconds after ':'");
+        check self.checkTime(self.currentToken.value, 0, 60, "minutes");
+        self.lexemeBuffer += ":" + self.currentToken.value;
+
+        check self.checkToken();
+        match self.currentToken.token {
+            EOL => {
+                return self.lexemeBuffer;
+            }
+            DOT => {
+                check self.checkToken(DECIMAL, "Expected a integer after '.' for the time fraction");
+                self.lexemeBuffer += "." + self.currentToken.value;
+
+                check self.checkToken();
+                match self.currentToken.token {
+                    EOL => {
+                        return self.lexemeBuffer;
+                    }
+                    PLUS|MINUS|ZULU => {
+                        return self.timeOffset(datePrefixed);
+                    }
+                }
+            }
+            PLUS|MINUS|ZULU => {
+                return self.timeOffset(datePrefixed);
+            }
+            _ => {
+                return self.generateError("Invalid token '" + self.currentToken.token + "' after seconds");
+            }
+        }
+    }
+
+    private function timeOffset(boolean datePrefixed) returns anydata|error {
+        match self.currentToken.token {
+            ZULU => {
+                return datePrefixed ? time:utcFromString(self.lexemeBuffer + "Z")
+                    : self.generateError("Cannot crate a UTC time for a local time");
+            }
+            PLUS|MINUS => {
+                if (datePrefixed) {
+                    self.lexemeBuffer += self.currentToken.token == PLUS ? "+" : "-";
+
+                    check self.checkToken(DECIMAL, "Expected a 2 digit hours after time offset");
+                    check self.checkTime(self.currentToken.value, 0, 24, "hours");
+                    self.lexemeBuffer += self.currentToken.value;
+
+                    check self.checkToken(COLON, "Expected a ':' after hours");
+                    check self.checkToken(DECIMAL, "Expected 2 digit minutes after ':'");
+                    check self.checkTime(self.currentToken.value, 0, 60, "minutes");
+                    self.lexemeBuffer += ":" + self.currentToken.value;
+                    return time:utcFromString(self.lexemeBuffer);
+                }
+                return self.generateError("Cannot crate a UTC time for a local time");
+            }
+        }
+    }
+
+    private function checkDate(string value, int numDigits, string valueName) returns int|error {
+        if (value.length() != numDigits) {
+            return self.generateError("Expected number of digits in " + valueName + " to be " + numDigits.toString());
+        }
+        return <int>check self.processTypeCastingError('int:fromString(value));
+    }
+
+    private function date() returns anydata|error {
+        int year = check self.checkDate(self.lexemeBuffer, 4, "year");
+
+        check self.checkToken(DECIMAL, "Expected a 2 digit month after '-'");
+        int month = check self.checkDate(self.currentToken.value, 2, "month");
+        self.lexemeBuffer += "-" + self.currentToken.value;
+
+        check self.checkToken(MINUS, "Expected a '-' after month");
+        check self.checkToken(DECIMAL, "Expected a 2 digit day after '-'");
+        int day = check self.checkDate(self.currentToken.value, 2, "day");
+        self.lexemeBuffer += "-" + self.currentToken.value;
+
+        error? validateDate = 'time:dateValidate({year, month, day});
+        if(validateDate is error) {
+            return self.generateError(validateDate.toString().substring(18));
+        }
+
+        check self.checkToken();
+
+        match self.currentToken.token {
+            EOL => {
+                return self.lexemeBuffer;
+            }
+            TIME_DELIMITER => {
+                check self.checkToken(DECIMAL, "Expected a 2 digit decimal after the time delimiter");
+                string hours = self.currentToken.value;
+                self.lexemeBuffer += "T" + hours;
+                check self.checkToken(COLON, "Expected a ':' after hours");
+                return self.time(hours, true);
+            }
+            _ => {
+                return self.generateError("Invalid token token after");
             }
         }
     }
@@ -356,7 +506,7 @@ class Parser {
             LITERAL_STRING,
             MULTI_BSTRING_DELIMITER,
             MULTI_LSTRING_DELIMITER,
-            INTEGER,
+            DECIMAL,
             BOOLEAN,
             OPEN_BRACKET,
             CLOSE_BRACKET,
@@ -540,6 +690,17 @@ class Parser {
         return structure;
     }
 
+    private function processInteger(int numberSystem) returns int|error {
+        int value = 0;
+        int power = 1;
+        int length = self.currentToken.value.length() - 1;
+        foreach int i in 0 ... length {
+            value += check 'int:fromString(self.currentToken.value[length - i]) * power;
+            power *= numberSystem;
+        }
+        return value;
+    }
+
     # Check errors during type casting to Ballerina types.
     #
     # + value - Value to be type casted.
@@ -571,7 +732,7 @@ class Parser {
     #
     # + message - Error message
     # + return - Constructed Parsing Error message  
-    private function generateError(string message) returns ParsingError {
+    private function generateError(readonly & string message) returns ParsingError {
         string text = "Parsing Error at line "
                         + self.lexer.lineNumber.toString()
                         + " index "
