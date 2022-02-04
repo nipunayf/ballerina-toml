@@ -11,13 +11,31 @@ enum RegexPatterns {
     BINARY_DIGIT_PATTERN = "[0-1]{1}"
 }
 
+enum State {
+    EXPRESSION_KEY,
+    EXPRESSION_VALUE,
+    DATE_TIME,
+    MULTILINE_BSTRING,
+    MULITLINE_LSTRING,
+    MULTILINE_ESCAPE
+}
+
+# Represenst an error caused by the lexical analyzer
 type LexicalError distinct error;
 
+# Geneerates tokens based on the TOML lexemes  
 class Lexer {
+    # Properties to represent current position 
     int index;
     int lineNumber;
+
+    # Line to be lexically analyzed
     string line;
+
+    # Value of the generateed token
     string lexeme;
+
+    # Current state of the Lexer
     State state;
 
     function init() {
@@ -43,6 +61,7 @@ class Lexer {
             return check self.iterate(self.unquotedKey, UNQUOTED_KEY);
         }
 
+        // Generate tokens related to multi line basic strings
         if (self.state == MULTILINE_BSTRING || self.state == MULTILINE_ESCAPE) {
             // Process the escape symbol
             if (self.line[self.index] == "\\") {
@@ -56,29 +75,32 @@ class Lexer {
 
         }
 
+        // Generate tokens related to multi-line literal string
         if (self.state == MULITLINE_LSTRING && regex:matches(self.line[self.index], LITERAL_STRING_PATTERN)) {
             return self.iterate(self.multilineLiteralString, MULTI_LSTRING_CHARS);
         }
 
-        if (self.state == NUMBER) {
+        // Process tokens related to date time
+        if (self.state == DATE_TIME) {
             match self.line[self.index] {
-                ":" => {
+                ":" => { // Time separator
                     return self.generateToken(COLON);
                 }
-                "-" => {
+                "-" => { // Date separator or negative offset
                     return self.generateToken(MINUS);
                 }
-                "t"|"T"|" " => {
+                "t"|"T"|" " => { // Time delimiter
                     return self.generateToken(TIME_DELIMITER);
                 }
-                "+" => {
+                "+" => { // Postiive offest
                     return self.generateToken(PLUS);
                 }
-                "Z" => {
+                "Z" => { // Zulu offset
                     return self.generateToken(ZULU);
                 }
             }
 
+            // Digits for date time
             if (regex:matches(self.line[self.index], DECIMAL_DIGIT_PATTERN)) {
                 return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), DECIMAL);
             }
@@ -93,25 +115,24 @@ class Lexer {
                 return self.generateToken(EOL);
             }
             "=" => { // Key value seperator
-                self.state = EXPRESSION_VALUE;
                 return self.generateToken(KEY_VALUE_SEPERATOR);
             }
-            "[" => {
-                if (self.peek(1) == "[" && self.state == EXPRESSION_KEY) {
+            "[" => { // Array values and standard tables
+                if (self.peek(1) == "[" && self.state == EXPRESSION_KEY) { // Array tables
                     self.index += 1;
                     return self.generateToken(ARRAY_TABLE_OPEN);
                 }
                 return self.generateToken(OPEN_BRACKET);
             }
-            "]" => {
-                if (self.peek(1) == "]" && self.state == EXPRESSION_KEY) {
+            "]" => { // Array values and standard tables
+                if (self.peek(1) == "]" && self.state == EXPRESSION_KEY) { // Array tables
                     self.index += 1;
                     return self.generateToken(ARRAY_TABLE_CLOSE);
                 }
                 return self.generateToken(CLOSE_BRACKET);
             }
             "," => {
-                return self.generateToken(ARRAY_SEPARATOR);
+                return self.generateToken(SEPARATOR);
             }
             "\"" => { // Basic strings
 
@@ -146,7 +167,6 @@ class Lexer {
                 }
 
                 if (regex:matches(peekValue, DECIMAL_DIGIT_PATTERN)) {
-                    self.state = NUMBER;
                     return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), DECIMAL);
                 }
 
@@ -187,7 +207,7 @@ class Lexer {
                         self.index += 1;
                         return check self.tokensInSequence("nan", NAN);
                     }
-                    "i" => {
+                    "i" => { // Infinity tokens
                         self.lexeme = self.line[self.index];
                         self.index += 1;
                         return check self.tokensInSequence("inf", INFINITY);
@@ -212,19 +232,19 @@ class Lexer {
                 self.lexeme = "+";
                 return check self.tokensInSequence("inf", INFINITY);
             }
-            "e"|"E" => {
+            "e"|"E" => { // Exponential tokens
                 return self.generateToken(EXPONENTIAL);
             }
-            "{" => {
+            "{" => { // Inline table
                 return self.generateToken(INLINE_TABLE_OPEN);
             }
-            "}" => {
+            "}" => { // Inline table
                 return self.generateToken(INLINE_TABLE_CLOSE);
             }
         }
 
-        // Check for values starting with an DECIMAL.
-        if ((self.state == EXPRESSION_VALUE || self.state == NUMBER) && regex:matches(self.line[self.index], DECIMAL_DIGIT_PATTERN)) {
+        // Check for values starting with an integer.
+        if ((self.state == EXPRESSION_VALUE) && regex:matches(self.line[self.index], DECIMAL_DIGIT_PATTERN)) {
             return check self.iterate(self.digit(DECIMAL_DIGIT_PATTERN), DECIMAL);
         }
 
@@ -241,7 +261,7 @@ class Lexer {
                 self.index = i;
                 return true;
             }
-            return self.generateError("Invalid character \"" + self.line[i] + "\" for a basic string", i);
+            return self.generateError(self.formatErrorMessage(i, BASIC_STRING), i);
         }
 
         self.lexeme += self.line[i];
@@ -254,7 +274,7 @@ class Lexer {
     # + return - True if the end of the string, An error message for an invalid character.  
     private function multilineBasicString(int i) returns boolean|LexicalError {
         if (!regex:matches(self.line[i], BASIC_STRING_PATTERN)) {
-            if (self.line[i] == "\"") {
+            if (self.checkCharacter("\"", i)) {
                 self.index = i;
                 if (self.peek(1) == "\"" && self.peek(2) == "\"") {
 
@@ -269,18 +289,18 @@ class Lexer {
                     return true;
                 }
             } else {
-                return self.generateError("Invalid character \"" + self.line[i] + "\" for a multi-line basic string", i);
+                return self.generateError(self.formatErrorMessage(i, MULTI_BSTRING_CHARS), i);
             }
         }
 
         // Process the escape symbol
-        if (self.line[i] == "\\") {
+        if (self.checkCharacter("\\", i)) {
             self.index = i - 1;
             return true;
         }
 
         // Ignore whitespaces if the multiline escape symbol is detected
-        if (self.state == MULTILINE_ESCAPE && self.line[i] == " ") {
+        if (self.state == MULTILINE_ESCAPE && self.checkCharacter(" ", i)) {
             return false;
         }
 
@@ -295,11 +315,11 @@ class Lexer {
     # + return - True if the end of the string, An error message for an invalid character.  
     private function literalString(int i) returns boolean|LexicalError {
         if (!regex:matches(self.line[i], LITERAL_STRING_PATTERN)) {
-            if (self.line[i] == "'") {
+            if (self.checkCharacter("'", i)) {
                 self.index = i;
                 return true;
             }
-            return self.generateError("Invalid character \"" + self.line[i] + "\" for a literal string", i);
+            return self.generateError(self.formatErrorMessage(i, MULTI_LSTRING_CHARS), i);
         }
         self.lexeme += self.line[i];
         return false;
@@ -311,7 +331,7 @@ class Lexer {
     # + return - True if the end of the string, An error message for an invalid character.  
     private function multilineLiteralString(int i) returns boolean|LexicalError {
         if (!regex:matches(self.line[i], LITERAL_STRING_PATTERN)) {
-            if (self.line[i] == "'") {
+            if (self.checkCharacter("'", i)) {
                 self.index = i;
                 if (self.peek(1) == "'" && self.peek(2) == "'") {
 
@@ -326,7 +346,7 @@ class Lexer {
                     return true;
                 }
             } else {
-                return self.generateError("Invalid character \"" + self.line[i] + "\" for a multi-line literal string", i);
+                return self.generateError(self.formatErrorMessage(i, MULTI_BSTRING_CHARS), i);
             }
         }
 
@@ -344,7 +364,7 @@ class Lexer {
                 self.index = i - 1;
                 return true;
             }
-            return self.generateError("Invalid character \"" + self.line[i] + "\" for an unquoted key", i);
+            return self.generateError(self.formatErrorMessage(i, UNQUOTED_KEY), i);
         }
         self.lexeme += self.line[i];
         return false;
@@ -357,13 +377,13 @@ class Lexer {
     private function digit(string digitPattern) returns function (int i) returns boolean|LexicalError {
         return function(int i) returns boolean|LexicalError {
             if (!regex:matches(self.line[i], digitPattern)) {
-                if (self.line[i] == " " || self.line[i] == "#") {
+                if (self.checkCharacter([" ", "#", "\t"], i)) {
                     self.index = i - 1;
                     return true;
                 }
 
                 // Both preceding and succeeding chars of the '_' should be digits
-                if (self.line[i] == "_") {
+                if (self.checkCharacter("_", i)) {
                     // '_' should be after a digit
                     if (self.lexeme.length() > 0) {
                         string? nextChr = self.peek(1);
@@ -389,15 +409,15 @@ class Lexer {
                     }
                     if (self.checkCharacter(["-", ":"], i)) {
                         self.index = i - 1;
-                        self.state = NUMBER;
+                        self.state = DATE_TIME;
                     }
-                    if (self.state == NUMBER && self.checkCharacter(["-", ":", "t", "T", "+", "-", "Z"], i)) {
+                    if (self.state == DATE_TIME && self.checkCharacter(["-", ":", "t", "T", "+", "-", "Z"], i)) {
                         self.index = i - 1;
                     }
                     return true;
                 }
 
-                return self.generateError("Invalid character \"" + self.line[i] + "\" for an DECIMAL", i);
+                return self.generateError(self.formatErrorMessage(i, DECIMAL), i);
             }
             self.lexeme += self.line[i];
             return false;
@@ -443,8 +463,8 @@ class Lexer {
     # + return - If success, returns the token. Else, returns the parsing error.  
     private function tokensInSequence(string chars, TOMLToken successToken) returns Token|LexicalError {
         foreach string char in chars {
-            if (self.line[self.index] != char) {
-                return self.generateError("Invalid character '" + char + "' for a value", self.index);
+            if (!self.checkCharacter(char)) {
+                return self.generateError(self.formatErrorMessage(self.index, successToken), self.index);
             }
             self.index += 1;
         }
@@ -455,9 +475,10 @@ class Lexer {
 
     # Assert the character of the current index
     #
-    # + expectedCharacters - Expected characters at the current index
-    # + return - True if the assertion is true
-    private function checkCharacter(string|string[] expectedCharacters, int? index) returns boolean {
+    # + expectedCharacters - Expected characters at the current index  
+    # + index - Index of the character. If null, takes the lexer's 
+    # + return - True if the assertion is true. Else, an lexical error
+    private function checkCharacter(string|string[] expectedCharacters, int? index = ()) returns boolean {
         if (expectedCharacters is string) {
             return expectedCharacters == self.line[index == () ? self.index : index];
         } else if (expectedCharacters.indexOf(self.line[index == () ? self.index : index]) == ()) {
@@ -465,6 +486,7 @@ class Lexer {
         }
         return true;
     }
+
     # Generates a Lexical Error.
     #
     # + message - Error message  
@@ -493,5 +515,14 @@ class Lexer {
             token: token,
             value: lexemeBuffer
         };
+    }
+
+    # Generate the template error message "Invalid character '${char}' for a '${token}'"
+    #
+    # + index - Index of the character
+    # + tokenName - Expected token name
+    # + return - Generated error message
+    private function formatErrorMessage(int index, TOMLToken tokenName) returns string {
+        return "Invalid character '" + self.line[index] + "' for a '" + tokenName + "'";
     }
 }
