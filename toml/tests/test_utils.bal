@@ -166,3 +166,21 @@ class AssertKey {
         return;
     }
 }
+
+# Assert if given word(s) are in the output array
+#
+# + structure - TOML structure to be tested
+# + content - Words to be which should be in the file
+# + return - An error on fail
+function assertStringArray(map<anydata> structure, string|string[] content) returns error? {
+    Writer writer = new Writer();
+    string[] output = check writer.write(structure);
+
+    if (content is string) {
+        test:assertTrue(output.indexOf(content) != ());
+    } else {
+        test:assertTrue(content.reduce(function(boolean assertion, string word) returns boolean {
+            return assertion && output.indexOf(word) != ();
+        }, true));
+    }
+}
