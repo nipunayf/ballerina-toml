@@ -28,7 +28,7 @@ function primitiveDataGen() returns map<[string, anydata, string]>|error {
 @test:Config {
     groups: ["writer"]
 }
-function testWriteDottedKeys() returns error?{
+function testWriteDottedKeys() returns error? {
     map<anydata> toml = {
         "a": {
             "b": 1
@@ -70,11 +70,31 @@ function testWriteStandardTableUnderArrayTable() returns error? {
     map<anydata> toml = {
         "a": [
             {"b": 1, "c": 2},
-            {"d": {
-                "e": 3,
-                "f": 4
-            }, "g": 5}
+            {
+                "d": {
+                    "e": 3,
+                    "f": 4
+                },
+                "g": 5
+            }
         ]
     };
     check assertStringArray(toml, ["[[a]]", "b = 1", "c = 2", "  [a.d]", "  e = 3", "  f = 4", "g = 5"]);
+}
+
+# Assert if given word(s) are in the output array
+#
+# + structure - TOML structure to be tested
+# + content - Words to be which should be in the file
+# + return - An error on fail
+function assertStringArray(map<anydata> structure, string|string[] content) returns error? {
+    string[] output = check write(structure, 2, true);
+
+    if (content is string) {
+        test:assertTrue(output.indexOf(content) != ());
+    } else {
+        test:assertTrue(content.reduce(function(boolean assertion, string word) returns boolean {
+            return assertion && output.indexOf(word) != ();
+        }, true));
+    }
 }

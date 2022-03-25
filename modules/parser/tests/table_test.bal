@@ -1,15 +1,6 @@
 import ballerina/test;
 
 @test:Config {}
-function testDoubleBracketTerminalTokens() returns error? {
-    Lexer lexer = setLexerString("[[");
-    check assertToken(lexer, ARRAY_TABLE_OPEN);
-
-    lexer = setLexerString("]]");
-    check assertToken(lexer, ARRAY_TABLE_CLOSE);
-}
-
-@test:Config {}
 function testMultipleStandardTables() returns error? {
     AssertKey ak = check new AssertKey("table_standard", true);
     ak.hasKey("table1")
@@ -35,16 +26,6 @@ function testDottedStandardTables() returns error? {
 }
 
 @test:Config {}
-function testDuplicateTableKeys() {
-    assertParsingError("table_duplicate", true);
-}
-
-@test:Config {}
-function testRedefiningDottedKey() {
-    assertParsingError("table_redefined_dotted", true);
-}
-
-@test:Config {}
 function testTableUndefinedDottedKey() returns error? {
     AssertKey ak = check new AssertKey("table_undefined_dotted", true);
     ak.dive("table")
@@ -52,15 +33,6 @@ function testTableUndefinedDottedKey() returns error? {
             .hasKey("key", 1)
             .hasKey("inner", 1)
             .close();
-}
-
-@test:Config {}
-function testInlineTableTerminalTokens() returns error? {
-    Lexer lexer = setLexerString("{", EXPRESSION_VALUE);
-    check assertToken(lexer, INLINE_TABLE_OPEN);
-
-    lexer = setLexerString("}", EXPRESSION_VALUE);
-    check assertToken(lexer, INLINE_TABLE_CLOSE);
 }
 
 @test:Config {}
@@ -79,11 +51,6 @@ function testProcesInlineTable() returns error? {
 }
 
 @test:Config {}
-function testRedefineInlineTable() {
-    assertParsingError("inline_redefine_table", true);
-}
-
-@test:Config {}
 function testEmptyInlineTable() returns error? {
     AssertKey ak = check new AssertKey("key = {}");
     ak.hasKey("key").close();
@@ -95,14 +62,21 @@ function testSeparatorBeforeInlineTableTerminal() {
     assertParsingError("{,}");
 }
 
-@test:Config {}
-function testRedefineSuperTable() {
-    assertParsingError("inline_redefine_super_table", true);
+@test:Config {
+    dataProvider: invalidTableDataGen
+}
+function testInvalidTable(string fileName) returns error? {
+    assertParsingError(fileName, true);
 }
 
-@test:Config {}
-function testTableRedefineArrayTable() {
-    assertParsingError("table_redefine_array_table", true);
+function invalidTableDataGen() returns map<[string]> {
+    return {
+        "duplicate table keys": ["table_duplicate"],
+        "redefining dotted keys": ["table_redefined_dotted"],
+        "redefining inline tables": ["inline_redefine_table"],
+        "redefining super table using inline table": ["inline_redefine_super_table"],
+        "redefining array table using standard table": ["table_redefine_array_table"]
+    };
 }
 
 @test:Config {}

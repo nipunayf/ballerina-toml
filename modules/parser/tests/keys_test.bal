@@ -1,51 +1,6 @@
 import ballerina/test;
 
 @test:Config {}
-function testFullLineComment() returns error? {
-    Lexer lexer = setLexerString("# someComment");
-    check assertToken(lexer, EOL);
-}
-
-@test:Config {}
-function testEOLComment() returns error? {
-    Lexer lexer = setLexerString("someKey = \"someValue\" # someComment");
-    check assertToken(lexer, EOL, 4);
-}
-
-@test:Config {}
-function testMultipleWhiteSpaces() returns error? {
-    Lexer lexer = setLexerString("  ");
-    check assertToken(lexer, EOL);
-}
-
-@test:Config {}
-function testUnquotedKey() returns error? {
-    Lexer lexer = setLexerString("somekey = \"Some Value\"");
-    check assertToken(lexer, UNQUOTED_KEY, lexeme = "somekey");
-}
-
-@test:Config {}
-function testUnquotedKeyWithInvalidChar() {
-    assertLexicalError("some$value = 1");
-}
-
-@test:Config {}
-function testKeyValueSeparator() returns error? {
-    Lexer lexer = setLexerString("somekey = 1");
-    check assertToken(lexer, KEY_VALUE_SEPARATOR, 2);
-}
-
-@test:Config {}
-function testDot() returns error? {
-    Lexer lexer = setLexerString("outer.'inner' = 3");
-    check assertToken(lexer, UNQUOTED_KEY, lexeme = "outer");
-    check assertToken(lexer, DOT);
-    check assertToken(lexer, LITERAL_STRING, lexeme = "inner");
-}
-
-// Parsing Testing
-
-@test:Config {}
 function testSimpleUnquotedKey() returns error? {
     AssertKey ak = check new AssertKey("somekey = \"somevalue\"");
     ak.hasKey("somekey", "somevalue").close();
@@ -63,12 +18,20 @@ function testSimpleQuotedLiteralStringKey() returns error? {
     ak.hasKey("somekey", "somevalue").close();
 }
 
-@test:Config {}
-function testInvalidSimpleKey() {
-    assertParsingError("somekey = somevalue", isLexical = true);
-    assertParsingError("somekey = #somecomment");
-    assertParsingError("somekey somevalue");
-    assertParsingError("somekey =");
+@test:Config {
+    dataProvider: invalidSimpleKeyDataGen
+}
+function testInvalidSimpleKey(string testingLine, boolean isLexical) returns error? {
+    assertParsingError(testingLine, isLexical = isLexical);
+}
+
+function invalidSimpleKeyDataGen() returns map<[string, boolean]> {
+    return {
+        "bare keys as value": ["somekey = somevalue", true],
+        "comment as value": ["somekey = #somecomment", false],
+        "no equal sign": ["somekey somevalue", false],
+        "no value": ["somekey =", false]
+    };
 }
 
 @test:Config {}
