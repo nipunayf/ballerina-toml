@@ -46,16 +46,20 @@ function keyValue(ParserState state, map<json> structure) returns map<json>|Pars
                 lexer:INLINE_TABLE_OPEN
             ]);
 
-            // Existing tables cannot be overwritten by inline tables
-            if (state.currentToken.token == lexer:INLINE_TABLE_OPEN && structure[tomlKey] is map<json>) {
-                return generateError(state, formateDuplicateErrorMessage(state.bufferedKey));
+            if (state.currentToken.token == lexer:INLINE_TABLE_OPEN) {
+                state.definedInlineTables.push(state.bufferedKey);
+
+                // Existing tables cannot be overwritten by inline tables
+                if structure[tomlKey] is map<json> {
+                    return generateDuplicateError(state, state.bufferedKey);
+                }
             }
 
             structure[tomlKey] = check dataValue(state);
             return structure;
         }
         _ => {
-            return generateError(state, formatExpectErrorMessage(state.currentToken.token, [lexer:DOT, lexer:KEY_VALUE_SEPARATOR], lexer:UNQUOTED_KEY));
+            return generateExpectError(state, [lexer:DOT, lexer:KEY_VALUE_SEPARATOR], lexer:UNQUOTED_KEY);
         }
     }
 }
@@ -77,12 +81,15 @@ function dataValue(ParserState state) returns json|lexer:LexicalError|ParsingErr
             returnData = check number(state, "");
         }
         lexer:HEXADECIMAL => {
+            check checkEmptyInteger(state);
             returnData = check processTypeCastingError(state, 'int:fromHexString(state.currentToken.value));
         }
         lexer:BINARY => {
+            check checkEmptyInteger(state);
             returnData = check processInteger(state, 2);
         }
         lexer:OCTAL => {
+            check checkEmptyInteger(state);
             returnData = check processInteger(state, 8);
         }
         lexer:INFINITY => {
@@ -99,7 +106,7 @@ function dataValue(ParserState state) returns json|lexer:LexicalError|ParsingErr
 
             // Static arrays cannot be redefined by the array tables.
             if (!state.isArrayTable) {
-                state.definedTableKeys.push(state.currentTableKey.length() == 0 ? state.bufferedKey : state.currentTableKey + "." + state.bufferedKey);
+                state.addTableKey(state.currentTableKey.length() == 0 ? state.bufferedKey : state.currentTableKey + "." + state.bufferedKey);
                 state.bufferedKey = "";
             }
         }
@@ -108,7 +115,7 @@ function dataValue(ParserState state) returns json|lexer:LexicalError|ParsingErr
 
             // Inline tables cannot be redefined by the standard tables.
             if (!state.isArrayTable) {
-                state.definedTableKeys.push(state.currentTableKey.length() == 0 ? state.bufferedKey : state.currentTableKey + "." + state.bufferedKey);
+                state.addTableKey(state.currentTableKey.length() == 0 ? state.bufferedKey : state.currentTableKey + "." + state.bufferedKey);
                 state.bufferedKey = "";
             }
         }
@@ -117,4 +124,14 @@ function dataValue(ParserState state) returns json|lexer:LexicalError|ParsingErr
         }
     }
     return returnData;
+}
+
+# Check if the digits are empty.
+#
+# + state - Current parser state
+# + return - An error on empty digits
+function checkEmptyInteger(ParserState state) returns GrammarError? {
+    if state.currentToken.value.length() == 0 {
+        return generateGrammarError(state, "Digits cannot be empty");
+    }
 }

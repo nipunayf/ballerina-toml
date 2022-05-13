@@ -49,10 +49,11 @@ function standardTable(ParserState state, map<json> structure, string keyName = 
 
     // Verifies the current key
     string tomlKey = state.currentToken.value;
+    string tomlKeyRepresent = getTomlKey(state);
     state.keyStack.push(tomlKey);
     check verifyKey(state, structure, tomlKey);
 
-    check checkToken(state);
+    check checkToken(state, [lexer:DOT, lexer:CLOSE_BRACKET]);
 
     match state.currentToken.token {
         lexer:DOT => { // Build the dotted key
@@ -64,13 +65,14 @@ function standardTable(ParserState state, map<json> structure, string keyName = 
 
             // Check if the table key is already defined.
             string tableKeyName = keyName + tomlKey;
-            check verifyTableKey(state, tableKeyName);
-            state.definedTableKeys.push(tableKeyName);
+            check verifyTableKey(state, keyName + tomlKeyRepresent);
+            check checkExtensionOfInlineTable(state, keyName + tomlKeyRepresent);
+            state.addTableKey(tableKeyName);
             state.currentTableKey = tableKeyName;
 
             // Cannot define a standard table for an already defined array table.
             if (structure.hasKey(tomlKey) && !(structure[tomlKey] is map<json>)) {
-                return generateError(state, formateDuplicateErrorMessage(tableKeyName));
+                return generateDuplicateError(state, tableKeyName);
             }
 
             state.currentStructure = structure[tomlKey] is map<json> ? <map<json>>structure[tomlKey] : {};
@@ -90,10 +92,11 @@ function arrayTable(ParserState state, map<json> structure, string keyName = "")
 
     // Verifies the current key
     string tomlKey = state.currentToken.value;
+    string tomlKeyRepresent = getTomlKey(state);
     state.keyStack.push(tomlKey);
     check verifyKey(state, structure, tomlKey);
 
-    check checkToken(state);
+    check checkToken(state, [lexer:DOT, lexer:ARRAY_TABLE_CLOSE]);
 
     match state.currentToken.token {
         lexer:DOT => { // Build the dotted key
@@ -104,11 +107,13 @@ function arrayTable(ParserState state, map<json> structure, string keyName = "")
         lexer:ARRAY_TABLE_CLOSE => { // Initialize the current structure
 
             // Check if there is an static array or a standard table key already defined.
-            check verifyTableKey(state, keyName + tomlKey);
+            check verifyTableKey(state, keyName + tomlKeyRepresent);
+            check checkExtensionOfInlineTable(state, keyName + tomlKeyRepresent);
+            state.addTableKey(keyName + tomlKey);
 
             // Cannot define an array table for already defined standard table.
             if (structure.hasKey(tomlKey) && !(structure[tomlKey] is json[])) {
-                return generateError(state, formateDuplicateErrorMessage(keyName + tomlKey));
+                return generateDuplicateError(state, keyName + tomlKey);
             }
 
             // An array table always create a new object.
@@ -129,7 +134,7 @@ function verifyKey(ParserState state, map<json>? structure, string key) returns 
     if (structure is map<json>) {
         map<json> castedStructure = <map<json>>structure;
         if (castedStructure.hasKey(key) && !(castedStructure[key] is json[] || castedStructure[key] is map<json>)) {
-            return generateError(state, formateDuplicateErrorMessage(state.bufferedKey, "values"));
+            return generateDuplicateError(state, state.bufferedKey, "values");
         }
     }
 }
@@ -141,8 +146,32 @@ function verifyKey(ParserState state, map<json>? structure, string key) returns 
 # + tableKeyName - Table key name to be checked
 # + return - An error if the key already exists.  
 function verifyTableKey(ParserState state, string tableKeyName) returns ParsingError? {
-    if (state.definedTableKeys.indexOf(tableKeyName) != ()) {
-        return generateError(state, formateDuplicateErrorMessage(state.bufferedKey, "table key"));
+    if (state.definedTableKeys.indexOf(tableKeyName) != ()
+        || state.tempTableKeys.indexOf(tableKeyName) != ()
+        || (!state.isArrayTable && state.definedArrayTableKeys.indexOf(tableKeyName) != ())) {
+        return generateDuplicateError(state, tableKeyName, "table key");
     }
 }
 
+function getTomlKey(ParserState state) returns string {
+    if state.currentToken.token == lexer:BASIC_STRING {
+        return string `\"${state.currentToken.value}\"`;
+    }
+    if state.currentToken.token == lexer:LITERAL_STRING {
+        return string `'${state.currentToken.value}'`;
+    }
+    return state.currentToken.value;
+}
+
+# Check if the standard table key is an extension of array table since it is immutable.
+#
+# + state - Current parser state
+# + tableKey - Table to check if it is valid
+# + return - True if is an extension
+function checkExtensionOfInlineTable(ParserState state, string tableKey) returns GrammarError? {
+    foreach string inlineTableKey in state.definedInlineTables {
+        if tableKey.startsWith(inlineTableKey) && tableKey[inlineTableKey.length()] == "." {
+            return generateGrammarError(state, "Inline tables are immutable");
+        }
+    }
+}

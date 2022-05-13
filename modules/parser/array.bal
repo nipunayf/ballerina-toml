@@ -27,7 +27,7 @@ function array(ParserState state, json[] tempArray = []) returns json[]|lexer:Le
 
     match state.currentToken.token {
         lexer:EOL => {
-            check state.initLexer(formatExpectErrorMessage(state.currentToken.token, lexer:CLOSE_BRACKET, lexer:OPEN_BRACKET));
+            check state.initLexer(generateExpectError(state, lexer:CLOSE_BRACKET, lexer:OPEN_BRACKET));
             return array(state, tempArray);
         }
         lexer:CLOSE_BRACKET => { // If the array ends with a ','
@@ -47,6 +47,7 @@ function array(ParserState state, json[] tempArray = []) returns json[]|lexer:Le
 # + return - Completed array on success. An error if the grammar rules are not met.
 function arrayValue(ParserState state, json[] tempArray = []) returns json[]|lexer:LexicalError|ParsingError {
     lexer:TOMLToken prevToken;
+    state.updateLexerContext(lexer:EXPRESSION_VALUE);
 
     if (state.tokenConsumed) {
         prevToken = lexer:DECIMAL;
@@ -58,7 +59,7 @@ function arrayValue(ParserState state, json[] tempArray = []) returns json[]|lex
 
     match state.currentToken.token {
         lexer:EOL => {
-            check state.initLexer("Expected ']' or ',' after an array value");
+            check state.initLexer(generateGrammarError(state, "Expected ']' or ',' after an array value"));
             return arrayValue(state, tempArray);
         }
         lexer:CLOSE_BRACKET => {
@@ -68,7 +69,7 @@ function arrayValue(ParserState state, json[] tempArray = []) returns json[]|lex
             return array(state, tempArray);
         }
         _ => {
-            return generateError(state, formatExpectErrorMessage(state.currentToken.token, [lexer:EOL, lexer:CLOSE_BRACKET, lexer:SEPARATOR], prevToken));
+            return generateExpectError(state, [lexer:EOL, lexer:CLOSE_BRACKET, lexer:SEPARATOR], prevToken);
         }
     }
 }

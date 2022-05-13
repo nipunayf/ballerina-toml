@@ -21,7 +21,16 @@ class ParserState {
     # Already defined table keys
     string[] definedTableKeys = [];
 
-    # If the token for a next grammar rule has been buffered to the current token
+    # Already defined array table keys
+    string[] definedArrayTableKeys = [];
+
+    # Already defined inline table keys
+    string[] definedInlineTables = [];
+
+    # Keys defined specific for the current array table.
+    string[] tempTableKeys = [];
+
+    # If the token for a next grammar rule has been buffered to the current token.
     boolean tokenConsumed = false;
 
     # Buffers the key in the full format
@@ -33,11 +42,14 @@ class ParserState {
     # The current table key name. If empty, then current table is the root.
     string currentTableKey = "";
 
+    readonly & boolean parseOffsetDateTime;
+
     lexer:LexerState lexerState = new ();
 
-    function init(string[] inputLines) {
+    function init(string[] inputLines, boolean parseOffsetDateTime) {
         self.lines = inputLines;
         self.numLines = inputLines.length();
+        self.parseOffsetDateTime = parseOffsetDateTime;
     }
 
     function updateLexerContext(lexer:Context context) {
@@ -46,18 +58,46 @@ class ParserState {
 
     # Initialize the lexer with the attributes of a new line.
     #
-    # + message - Error message to display when if the initialization fails 
+    # + err - Error to be returned on failure
     # + incrementLine - Sets the next line to the lexer
     # + return - An error if it fails to initialize  
-    function initLexer(string message, boolean incrementLine = true) returns ParsingError? {
+    function initLexer(GrammarError err, boolean incrementLine = true) returns ParsingError? {
         if (incrementLine) {
             self.lineIndex += 1;
         }
         if (self.lineIndex >= self.numLines) {
-            return generateError(self, message);
+            return err;
         }
         self.lexerState.line = self.lines[self.lineIndex];
         self.lexerState.index = 0;
         self.lexerState.lineNumber = self.lineIndex;
+    }
+
+    # Add a table key to the respective array if possible.
+    #
+    # + tableKey - Table key to be added.
+    function addTableKey(string tableKey) {
+        // Array table keys are maintained separately
+        if self.isArrayTable {
+            if self.definedArrayTableKeys.indexOf(tableKey) == () {
+                self.definedArrayTableKeys.push(tableKey);
+            }
+            return;
+        }
+
+        // Check if the standard table key is an extension of array table.
+        // If it is, then added to a temp array that is only valid for that array table.
+        foreach string arrayTableKey in self.definedArrayTableKeys {
+            if arrayTableKey == tableKey
+                || tableKey.startsWith(arrayTableKey) && tableKey[arrayTableKey.length()] == "." {
+                self.tempTableKeys.push(tableKey);
+                return;
+            }
+        }
+
+        // A regular standard key is persistent throughout the document.
+        if tableKey.length() != 0 {
+            self.definedTableKeys.push(tableKey);
+        }
     }
 }

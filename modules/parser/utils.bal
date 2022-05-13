@@ -19,18 +19,18 @@ function checkToken(ParserState state, lexer:TOMLToken|lexer:TOMLToken[] expecte
     }
 
     // Automatically generates a template error message if there is no custom message.
-    string errorMessage = customMessage.length() == 0
-                                ? formatExpectErrorMessage(state.currentToken.token, expectedTokens, prevToken)
-                                : customMessage;
-
     // Generate an error if the expected token differ from the actual token.
     if (expectedTokens is lexer:TOMLToken) {
         if (state.currentToken.token != expectedTokens) {
-            return generateError(state, errorMessage);
+            return customMessage.length() == 0
+                ? generateExpectError(state, expectedTokens, prevToken)
+                : generateGrammarError(state, customMessage);
         }
     } else {
         if (expectedTokens.indexOf(state.currentToken.token) == ()) {
-            return generateError(state, errorMessage);
+            return customMessage.length() == 0
+                ? generateExpectError(state, expectedTokens, prevToken)
+                : generateGrammarError(state, customMessage);
         }
     }
 
@@ -55,14 +55,16 @@ function buildTOMLObject(ParserState state, map<json> structure) returns map<jso
             // Adds the current structure to the end of the array.
             if (structure[key] is json[]) {
                 (<json[]>structure[key]).push(state.currentStructure.clone());
-
-                // If the array does not exist, initialize and add it.
-            } else {
-                structure[key] = [state.currentStructure.clone()];
             }
 
-            // If a standard table, assign the structure directly under the key
-        } else {
+            // If the array does not exist, initialize and add it.
+            else {
+                structure[key] = [state.currentStructure.clone()];
+            }
+        }
+
+        // If a standard table, assign the structure directly under the key
+        else {
             structure[key] = state.currentStructure;
         }
         return structure;
@@ -78,14 +80,14 @@ function buildTOMLObject(ParserState state, map<json> structure) returns map<jso
         structure[key] = value;
     }
 
-        // If there is a standard table under an array table, obtain the latest object.
-        else if (structure[key] is json[]) {
+    // If there is a standard table under an array table, obtain the latest object.
+    else if (structure[key] is json[]) {
         value = check buildTOMLObject(state, <map<json>>(<json[]>structure[key]).pop());
         (<json[]>structure[key]).push(value);
     }
 
-        // Creates a new structure if not exists.
-        else {
+    // Creates a new structure if not exists.
+    else {
         value = check buildTOMLObject(state, {});
         structure[key] = value;
     }
@@ -114,10 +116,15 @@ function processInteger(ParserState state, int numberSystem) returns int|Parsing
 # + state - Current parser state
 # + value - Value to be type casted.
 # + return - Value as a Ballerina data type  
-function processTypeCastingError(ParserState state, json|error value) returns json|ParsingError {
+function processTypeCastingError(ParserState state, json|error value) returns json|ConversionError {
     // Check if the type casting has any errors
     if value is error {
-        return generateError(state, "Invalid value for assignment");
+        return error(
+            "Invalid value for assignment.",
+            line = state.lexerState.lineNumber + 1,
+            column = state.lexerState.index,
+            actual = state.currentToken.token
+        );
     }
 
     // Returns the value on success

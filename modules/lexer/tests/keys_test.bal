@@ -1,44 +1,58 @@
 import ballerina/test;
 
-@test:Config {}
+@test:Config {
+    groups: ["lexer"]
+}
 function testFullLineComment() returns error? {
     LexerState state = setLexerString("# someComment");
-    check assertToken(state,EOL);
+    check assertToken(state, EOL);
 }
 
-@test:Config {}
+@test:Config {
+    groups: ["lexer"]
+}
 function testEOLComment() returns error? {
-    LexerState state = setLexerString("someKey = \"someValue\" # someComment");
-    check assertToken(state,EOL, 4);
+    LexerState state = setLexerString("\"someValue\" # someComment", EXPRESSION_VALUE);
+    check assertToken(state, EOL, 2);
 }
 
-@test:Config {}
+@test:Config {
+    groups: ["lexer"]
+}
 function testMultipleWhiteSpaces() returns error? {
     LexerState state = setLexerString("  ");
-    check assertToken(state,EOL);
+    check assertToken(state, EOL);
 }
 
-@test:Config {}
-function testUnquotedKey() returns error? {
+@test:Config {
+    groups: ["lexer"]
+}
+function testscanUnquotedKey() returns error? {
     LexerState state = setLexerString("somekey = \"Some Value\"");
-    check assertToken(state,UNQUOTED_KEY, lexeme = "somekey");
+    check assertToken(state, UNQUOTED_KEY, lexeme = "somekey");
 }
 
-@test:Config {}
-function testUnquotedKeyWithInvalidChar() {
+@test:Config {
+    groups: ["lexer"]
+}
+function testscanUnquotedKeyWithInvalidChar() {
     assertLexicalError("some$value = 1");
 }
 
-@test:Config {}
+@test:Config {
+    groups: ["lexer"]
+}
 function testKeyValueSeparator() returns error? {
     LexerState state = setLexerString("somekey = 1");
-    check assertToken(state,KEY_VALUE_SEPARATOR, 2);
+    check assertToken(state, KEY_VALUE_SEPARATOR, 2);
 }
 
-@test:Config {}
+@test:Config {
+    groups: ["lexer"]
+}
 function testDot() returns error? {
     LexerState state = setLexerString("outer.'inner' = 3");
-    check assertToken(state,UNQUOTED_KEY, lexeme = "outer");
-    check assertToken(state,DOT);
-    check assertToken(state,LITERAL_STRING, lexeme = "inner");
+    check assertToken(state, UNQUOTED_KEY, lexeme = "outer");
+    check assertToken(state, DOT);
+    check assertToken(state, LITERAL_STRING, lexeme = "inner");
 }

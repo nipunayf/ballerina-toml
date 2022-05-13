@@ -4,6 +4,14 @@
 
 `Ballerina TOML Parser` converts a TOML configuration file to the Ballerina type of `map<json>`, and vice-versa.     
 
+Initially, import the `nipuanyf/toml` into the Ballerina project.
+
+```ballerina
+import nipunayf/toml;
+```
+
+Currently, the module supports to both read and write a TOML document.
+
 ## Compatibility
 
 | Language  | Version                        |
@@ -11,49 +19,18 @@
 | Ballerina | Ballerina 2201.0.0 (Swan Lake) |
 | TOML      | 1.0                            |
 
-## API Guide
-
-Initially, import the `nipuanyf/toml` into the Ballerina project.
-
-```ballerina
-import nipunayf/toml;
-```
-
-Currently, the module supports to both parse and write a TOML document. 
+The parser follows the grammar rules particularized in the [TOML specification 1.0](https://toml.io/en/v1.0.0).
 
 ### Parsing a TOML Document
 
-Since the parser is following LL(1) grammar, it follows a non-recursive predictive parsing algorithm. Thus, it operates in a linear time complexity. The module supports to parse either a TOML file or a TOML string.
+Since the parser is following LL(1) grammar, it follows a non-recursive predictive parsing algorithm which operates in a linear time complexity. The module supports to parse either a TOML file or a TOML string.
 
 ```ballerina
 // Parsing a TOML file
-map<json>|error toml = readFile("path/to/file.toml");
-```
+map<json>|error toml = read("path/to/file.toml");
 
-```ballerina
 // Parsing a TOML string
-map<json>|error toml = read("outer.inner = 1");
-```
-
-For instance, we can convert the parsed TOML document to JSON and create a `.json` file to view the converted structure.
-
-```ballerina
-if (toml is map<json>) {
-    // If successful, conver the TOML structure to JSON and write it.
-    io:fileWriteJson("myfile.json", toml.toJson());
-} else {
-    // Print the error on failure.
-    log:printError("Failed to parse.", 'error = toml);
-}
-```
-
-Once it is processed, the output JSON file can be shown as below.
-
-```json
-{
-    "outer": {
-        "inner": 1
-}
+map<json>|error toml = readString("outer.inner = 1");
 ```
 
 ### Writing to a TOML Document
@@ -74,7 +51,7 @@ if (result is error) {
 }
 ```
 
-The TOML document of the `map<json>` structure can be shown as below.
+The TOML document of the `map<json>` structure is created as shown as below.
 
 ```toml
 str = "string"
@@ -101,27 +78,27 @@ key = "value"
 
 ## Supported Data Types
 
-TOML primitives are mapped to the Ballerina types as follow.
+The following TOML primitives are mapped to the Ballerina types as follow.
 
-| TOML                                        | Ballerina                        |
-| ------------------------------------------- | -------------------------------- |
-| Integer                                     | `ballerina.lang.'int`            |
-| Float                                       | `ballerina.lang.'float`          |
-| Infinity                                    | `ballerina.lang.'float.Infinity` |
-| NaN                                         | `ballerina.lang.'float.NaN`      |
-| Unquoted, Basic and Literal Strings         | `ballerina.lang.'string`         |
-| Boolean                                     | `ballerina.lang.'boolean`        |
-| Array                                       | `json[]`                      |
-| Table                                       | `map<json>`                   |
-| Offset Date-Time                            | `ballerina.time.Utc`             |
-| Local Date-Time, Local Date, and Local Time | `ballerina.lang.'string`         |
+| TOML                                        | Ballerina                       |
+| ------------------------------------------- | ------------------------------- |
+| Integer                                     | `ballerina.lang.int`            |
+| Float                                       | `ballerina.lang.float`          |
+| Infinity                                    | `ballerina.lang.float.Infinity` |
+| NaN                                         | `ballerina.lang.float.NaN`      |
+| Unquoted, Basic and Literal Strings         | `ballerina.lang.string`         |
+| Boolean                                     | `ballerina.lang.boolean`        |
+| Array                                       | `json[]`                        |
+| Table                                       | `map<json>`                     |
+| Offset Date-Time                            | `ballerina.time.Utc`            |
+| Local Date-Time, Local Date, and Local Time | `ballerina.lang.string`         |
 
 ## Error Handling
 
-The module contains three main types of errors
+The module generates following three types of errors.
 
-| Errors        | Description                                                                                    |
-| ------------- | ---------------------------------------------------------------------------------------------- |
-| Lexical Error | Generated when there is an invalid character for the token's lexeme.                           |
-| Parsing Error | Generated when the token sequence does not mach with the grammar.                              |
+| Errors        | Description                                                                                 |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| Lexical Error | Generated when there is an invalid character for the token's lexeme.                        |
+| Parsing Error | Generated when the token sequence does not mach with the grammar.                           |
 | Writing Error | Generated when there is an issue during the conversion from `map<json>` to a TOML document. |

@@ -1,19 +1,68 @@
 import ballerina/regex;
 
+# Check for the lexemes to create an literal string.
+#
+# + state - Current lexer state
+# + return - True if the end of the string, An error message for an invalid character.
+function scanLiteralString(LexerState state) returns boolean|LexicalError {
+    if regex:matches(<string>state.peek(), LITERAL_STRING_PATTERN) {
+        state.appendToLexeme(<string>state.peek());
+        return false;
+    }
+    if (checkCharacter(state, "'")) {
+        return true;
+    }
+    return generateInvalidCharacterError(state, LITERAL_STRING);
+}
+
+# Check for the lexemes to create a basic string for a line in multiline strings.
+#
+# + state - Current lexer state
+# + return - True if the end of the string, An error message for an invalid character.
+function scanMultilineLiteralString(LexerState state) returns boolean|LexicalError {
+    if (!regex:matches(<string>state.peek(), LITERAL_STRING_PATTERN)) {
+        if (checkCharacter(state, "'")) {
+            if (state.peek(1) == "'" && state.peek(2) == "'") {
+
+                // Check if the double quotes are at the end of the line
+                if (state.peek(3) == "'" && state.peek(4) == "'") {
+                    state.appendToLexeme("''");
+                    state.forward();
+                    return true;
+                }
+
+                // Check if the single quotes are at the end of the line
+                if state.peek(3) == "'" {
+                    state.appendToLexeme("'");
+                    return true;
+                }
+
+                state.forward(-1);
+                return true;
+            }
+        } else {
+            return generateInvalidCharacterError(state, MULTILINE_BASIC_STRING_LINE);
+        }
+    }
+
+    state.appendToLexeme(<string>state.peek());
+    return false;
+}
+
 # Check for the lexemes to create an basic string.
 #
 # + state - Current lexer state
 # + return - True if the end of the string, An error message for an invalid character.
-function basicString(LexerState state) returns LexicalError|boolean {
+function scanBasicString(LexerState state) returns LexicalError|boolean {
     if regex:matches(<string>state.peek(), BASIC_STRING_PATTERN) {
-        // Process escaped characters
-        if (state.peek() == "\\") {
-            state.forward();
-            check escapedCharacter(state);
-            return false;
-        }
-
         state.appendToLexeme(<string>state.peek());
+        return false;
+    }
+
+    // Process escaped characters
+    if (state.peek() == "\\") {
+        state.forward();
+        check scanEscapedCharacter(state);
         return false;
     }
 
@@ -21,15 +70,26 @@ function basicString(LexerState state) returns LexicalError|boolean {
         return true;
     }
 
-    return generateError(state, formatErrorMessage(<string>state.peek(), BASIC_STRING));
+    return generateInvalidCharacterError(state, BASIC_STRING);
 }
 
 # Check for the lexemes to create a basic string for a line in multiline strings.
 #
 # + state - Current lexer state
 # + return - True if the end of the string, An error message for an invalid character.
-function multilineBasicString(LexerState state) returns boolean|LexicalError {
+function scanMultilineBasicString(LexerState state) returns boolean|LexicalError {
     if (!regex:matches(<string>state.peek(), BASIC_STRING_PATTERN)) {
+        // Process the escape symbol
+        if (checkCharacter(state, "\\")) {
+            if state.peek(1) == () || state.peek(1) == " " || state.peek(1) == "\t" {
+                state.forward(-1);
+                return true;
+            }
+            state.forward();
+            check scanEscapedCharacter(state);
+            return false;
+        }
+
         if (checkCharacter(state, "\"")) {
             if (state.peek(1) == "\"" && state.peek(2) == "\"") {
 
@@ -40,18 +100,18 @@ function multilineBasicString(LexerState state) returns boolean|LexicalError {
                     return true;
                 }
 
+                // Check if the single quotes are at the end of the line
+                if state.peek(3) == "\"" {
+                    state.appendToLexeme("\"");
+                    return true;
+                }
+
                 state.forward(-1);
                 return true;
             }
         } else {
-            return generateError(state, formatErrorMessage(<string>state.peek(), MULTILINE_BASIC_STRING_LINE));
+            return generateInvalidCharacterError(state, MULTILINE_BASIC_STRING_LINE);
         }
-    }
-
-    // Process the escape symbol
-    if (checkCharacter(state, "\\")) {
-        state.forward(-1);
-        return true;
     }
 
     // Ignore whitespace if the multiline escape symbol is detected
@@ -69,12 +129,12 @@ function multilineBasicString(LexerState state) returns boolean|LexicalError {
 #
 # + state - Current lexer state
 # + return - An error on failure
-function escapedCharacter(LexerState state) returns LexicalError? {
+function scanEscapedCharacter(LexerState state) returns LexicalError? {
     string currentChar;
 
     // Check if the character is empty
     if (state.peek() == ()) {
-        return generateError(state, "Escaped character cannot be empty");
+        return generateLexicalError(state, "Escaped character cannot be empty");
     } else {
         currentChar = <string>state.peek();
     }
@@ -88,102 +148,59 @@ function escapedCharacter(LexerState state) returns LexicalError? {
     // Check for unicode characters
     match currentChar {
         "u" => {
-            check unicodeEscapedCharacters(state, "u", 4);
+            check scanUnicodeEscapedCharacter(state, "u", 4);
             return;
         }
         "U" => {
-            check unicodeEscapedCharacters(state, "U", 8);
+            check scanUnicodeEscapedCharacter(state, "U", 8);
             return;
         }
     }
-    return generateError(state, formatErrorMessage(<string>state.peek(), BASIC_STRING));
+    return generateInvalidCharacterError(state, BASIC_STRING);
 }
 
 # Process the hex codes under the unicode escaped character.
 #
 # + state - Current lexer state
-# + escapedChar - Escaped character before the digits  
-# + length - Number of digits
+# + escapedChar - Escaped character before the scanDigits  
+# + length - Number of scanDigits
 # + return - An error on failure
-function unicodeEscapedCharacters(LexerState state, string escapedChar, int length) returns LexicalError? {
+function scanUnicodeEscapedCharacter(LexerState state, string escapedChar, int length) returns LexicalError? {
 
-    // Check if the required digits do not overflow the current line.
+    // Check if the required scanDigits do not overflow the current line.
     if state.line.length() < length + state.index {
-        return generateError(state, string `Expected ${length.toString()} characters for the '\\${escapedChar}' unicode escape`);
+        return generateLexicalError(state, string `Expected ${length.toString()} characters for the '\\${escapedChar}' unicode escape`);
     }
 
     string unicodeDigits = "";
 
-    // Check if the digits adhere to the hexadecimal code pattern.
+    // Check if the scanDigits adhere to the hexadecimal code pattern.
     foreach int i in 0 ... length - 1 {
         state.forward();
         if regex:matches(<string>state.peek(), HEXADECIMAL_DIGIT_PATTERN) {
             unicodeDigits += <string>state.peek();
             continue;
         }
-        return generateError(state, formatErrorMessage(<string>state.peek(), HEXADECIMAL));
+        return generateInvalidCharacterError(state, HEXADECIMAL);
     }
     int|error hexResult = 'int:fromHexString(unicodeDigits);
     if hexResult is error {
-        return generateError(state, 'error:message(hexResult));
+        return generateLexicalError(state, 'error:message(hexResult));
     }
 
     string|error unicodeResult = 'string:fromCodePointInt(hexResult);
     if unicodeResult is error {
-        return generateError(state, 'error:message(unicodeResult));
+        return generateLexicalError(state, 'error:message(unicodeResult));
     }
 
     state.appendToLexeme(unicodeResult);
-}
-
-# Check for the lexemes to create an literal string.
-#
-# + state - Current lexer state
-# + return - True if the end of the string, An error message for an invalid character.
-function literalString(LexerState state) returns boolean|LexicalError {
-    if regex:matches(<string>state.peek(), LITERAL_STRING_PATTERN) {
-        state.appendToLexeme(<string>state.peek());
-        return false;
-    }
-    if (checkCharacter(state, "'")) {
-        return true;
-    }
-    return generateError(state, formatErrorMessage(<string>state.peek(), LITERAL_STRING));
-}
-
-# Check for the lexemes to create a basic string for a line in multiline strings.
-#
-# + state - Current lexer state
-# + return - True if the end of the string, An error message for an invalid character.
-function multilineLiteralString(LexerState state) returns boolean|LexicalError {
-    if (!regex:matches(<string>state.peek(), LITERAL_STRING_PATTERN)) {
-        if (checkCharacter(state, "'")) {
-            if (state.peek(1) == "'" && state.peek(2) == "'") {
-
-                // Check if the double quotes are at the end of the line
-                if (state.peek(3) == "'" && state.peek(4) == "'") {
-                    state.appendToLexeme("''");
-                    state.forward();
-                    return true;
-                }
-
-                state.forward(-1);
-                return true;
-            }
-        } else {
-            return generateError(state, formatErrorMessage(<string>state.peek(), MULTILINE_BASIC_STRING_LINE));
-        }
-    }
-
-    state.appendToLexeme(<string>state.peek());
-    return false;
 }
 
 # Check for the lexemes to create an unquoted key token.
 #
 # + state - Current lexer state
 # + return - True if the end of the key, An error message for an invalid character.
-function unquotedKey(LexerState state) returns boolean|LexicalError {
+function scanUnquotedKey(LexerState state) returns boolean|LexicalError {
     if regex:matches(<string>state.peek(), UNQUOTED_STRING_PATTERN) {
         state.appendToLexeme(<string>state.peek());
         return false;
@@ -194,17 +211,17 @@ function unquotedKey(LexerState state) returns boolean|LexicalError {
         return true;
     }
 
-    return generateError(state, formatErrorMessage(<string>state.peek(), UNQUOTED_KEY));
+    return generateInvalidCharacterError(state, UNQUOTED_KEY);
 
 }
 
 # Check for the lexemes to crete an DECIMAL token.
 #
-# + digitPattern - Regex pattern of the number system
+# + scanDigitPattern - Regex pattern of the number system
 # + return - Generates a function which checks the lexemes for the given number system.  
-function digit(string digitPattern) returns function (LexerState state) returns boolean|LexicalError {
+function scanDigit(string scanDigitPattern) returns function (LexerState state) returns boolean|LexicalError {
     return function(LexerState state) returns boolean|LexicalError {
-        if regex:matches(<string>state.peek(), digitPattern) {
+        if regex:matches(<string>state.peek(), scanDigitPattern) {
             state.appendToLexeme(<string>state.peek());
             return false;
         }
@@ -214,30 +231,30 @@ function digit(string digitPattern) returns function (LexerState state) returns 
             return true;
         }
 
-        // Both preceding and succeeding chars of the '_' should be digits
+        // Both preceding and succeeding chars of the '_' should be scanDigits
         if (checkCharacter(state, "_")) {
-            // '_' should be after a digit
+            // '_' should be after a scanDigit
             if (state.lexeme.length() > 0) {
                 string? nextChr = state.peek(1);
-                // '_' should be before a digit
+                // '_' should be before a scanDigit
                 if (nextChr == ()) {
                     state.forward();
-                    return generateError(state, "A digit must appear after the '_'");
+                    return generateLexicalError(state, "A scanDigit must appear after the '_'");
                 }
-                // check if the next character is a digit
-                if (regex:matches(<string>nextChr, digitPattern)) {
+                // check if the next character is a scanDigit
+                if (regex:matches(<string>nextChr, scanDigitPattern)) {
                     return false;
                 }
 
-                return generateError(state, string `Invalid character '${<string>state.peek()}' after '_'`);
+                return generateLexicalError(state, string `Invalid character '${<string>state.peek()}' after '_'`);
             }
-            return generateError(state, string `Invalid character '${<string>state.peek()}' after '='`);
+            return generateLexicalError(state, string `Invalid character '${<string>state.peek()}' after '='`);
         }
 
         // Float number allows only a decimal number a prefix.
         // Check for decimal points and exponential in decimal numbers.
         // Check for separators and end symbols.
-        if (digitPattern == DECIMAL_DIGIT_PATTERN) {
+        if (scanDigitPattern == DECIMAL_DIGIT_PATTERN) {
             if (checkCharacter(state, [".", "e", "E", ",", "]", "}"])) {
                 state.forward(-1);
             }
@@ -250,7 +267,7 @@ function digit(string digitPattern) returns function (LexerState state) returns 
             }
             return true;
         }
-        return generateError(state, formatErrorMessage(<string>state.peek(), DECIMAL));
+        return generateInvalidCharacterError(state, DECIMAL);
     }
 ;
 }

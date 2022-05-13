@@ -1,27 +1,43 @@
+# Represents an error caused by the lexical analyzer.
+public type LexicalError distinct error<ReadErrorDetails>;
 
-# Represent an error caused by the lexical analyzer
-public type LexicalError distinct error;
-
-# Generate the template error message "Invalid character '${char}' for a '${token}'"
+# Represents the error details when reading a TOML document.
 #
-# + character - The character which the error occurred  
-# + tokenName - Expected token name
-# + return - Generated error message
-function formatErrorMessage(string character, TOMLToken tokenName) returns string =>
-    string `Invalid character '${character} for a '${tokenName}'`;
+# + line - Line at which the error occurred  
+# + column - Column at which the error occurred  
+# + actual - The actual violated yaml string  
+# + expected - Expected yaml strings for the violated string  
+# + context - Context in which the error occurred
+public type ReadErrorDetails record {|
+    int line;
+    int column;
+    json actual;
+    json? expected = ();
+    string? context = ();
+|};
 
-# Generates a Lexical Error.
+# Generate an error message based on the template,
+# "Invalid character '${char}' for a '${token}'"
 #
 # + state - Current lexer state  
-# + message - Error message
-# + return - Constructed Lexical Error message
-function generateError(LexerState state, string message) returns LexicalError {
-    string text = "Lexical Error at line "
-                        + (state.lineNumber + 1).toString()
-                        + " index "
-                        + state.index.toString()
-                        + ": "
-                        + message
-                        + ".";
-    return error LexicalError(text);
+# + context - Context of the lexeme being scanned
+# + return - Generated error message
+function generateInvalidCharacterError(LexerState state, string context) returns LexicalError {
+    string? currentChar = state.peek();
+    string message = string `Invalid character '${currentChar ?: "<end-of-line>"}' for a '${context}'`;
+    return error(
+        message,
+        line = state.lineNumber + 1,
+        column = state.index,
+        actual = currentChar,
+        context = context
+    );
 }
+
+function generateLexicalError(LexerState state, string message) returns LexicalError =>
+    error(
+        message + ".",
+        line = state.lineNumber + 1,
+        column = state.index,
+        actual = state.peek()
+    );
