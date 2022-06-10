@@ -1,14 +1,14 @@
 import toml.lexer;
 import ballerina/time;
 
-# Handles the grammar rules of integers and float numbers.
+# Handles the grammar rules of integer and float number.
 # Delegates to date and time when the dates can be predicted.
 #
 # + state - Current parser state  
 # + prevValue - The prefixed value to the current token 
 # + fractional - Flag is set when processing the fractional segment
 # + return - Parsing error if occurred
-function number(ParserState state, string prevValue, boolean fractional = false) returns json|lexer:LexicalError|ParsingError {
+function number(ParserState state, string prevValue, boolean fractional = false) returns json|ParsingError {
     string valueBuffer = prevValue + state.currentToken.value;
     check checkToken(state);
 
@@ -18,38 +18,33 @@ function number(ParserState state, string prevValue, boolean fractional = false)
                 state.tokenConsumed = true;
             }
 
-            if (valueBuffer.length() > 1 && valueBuffer[0] == "0") && !fractional {
+            if valueBuffer.length() > 1 && valueBuffer[0] == "0" && !fractional {
                 return generateGrammarError(state, "Cannot have leading 0's in integers");
             }
             return fractional ? check processTypeCastingError(state, 'decimal:fromString(valueBuffer))
-                                        : check processTypeCastingError(state, 'int:fromString(valueBuffer));
+                : check processTypeCastingError(state, 'int:fromString(valueBuffer));
         }
         lexer:EXPONENTIAL => { // Handles exponential numbers
             check checkToken(state, lexer:DECIMAL);
             return <decimal>(check processTypeCastingError(state,
                 'decimal:fromString(string `${valueBuffer}E${state.currentToken.value}`)));
-            // Evaluating the exponential part
-            // float exponent = <float>(check processTypeCastingError(state, 'float:fromString(state.currentToken.value)));
-            // float prefix = <float>(check processTypeCastingError(state, 'float:fromString(valueBuffer)));
-            // float finalValue = prefix * 'float:pow(10, exponent);
-            // return <decimal>finalValue;
         }
         lexer:DOT => { // Handles fractional numbers
-            if (fractional) {
+            if fractional {
                 return generateGrammarError(state, "Cannot have a decimal point in the fraction part");
             }
-            if (valueBuffer.length() > 1 && valueBuffer[0] == "0") {
+            if valueBuffer.length() > 1 && valueBuffer[0] == "0" {
                 return generateGrammarError(state, "Cannot have leading 0's in integers");
             }
             check checkToken(state, lexer:DECIMAL);
             valueBuffer += ".";
             return check number(state, valueBuffer, true);
         }
-        lexer:MINUS => {
+        lexer:MINUS => { // Expect a date
             state.updateLexerContext(lexer:DATE_TIME);
             return check date(state, valueBuffer);
         }
-        lexer:COLON => {
+        lexer:COLON => { // Expect a time
             state.updateLexerContext(lexer:DATE_TIME);
             return check time(state, valueBuffer, valueBuffer);
         }
@@ -64,7 +59,7 @@ function number(ParserState state, string prevValue, boolean fractional = false)
 # + state - Current parser state  
 # + prevValue - The prefixed value to the current token 
 # + return - An error if the grammar rules are not met.  
-function date(ParserState state, string prevValue) returns json|lexer:LexicalError|ParsingError {
+function date(ParserState state, string prevValue) returns json|ParsingError {
     string valueBuffer = prevValue;
 
     // Validate the year
@@ -83,7 +78,7 @@ function date(ParserState state, string prevValue) returns json|lexer:LexicalErr
 
     // Validate the complete date
     error? validateDate = 'time:dateValidate({year, month, day});
-    if (validateDate is error) {
+    if validateDate is error {
         return generateGrammarError(state, validateDate.toString().substring(18));
     }
 
@@ -122,7 +117,7 @@ function date(ParserState state, string prevValue) returns json|lexer:LexicalErr
 # + prevValue - The prefixed value to the current token 
 # + datePrefixed - True if there is a date before the time
 # + return - Returns the formatted time on success. Else, an parsing error.
-function time(ParserState state, string hours, string prevValue, boolean datePrefixed = false) returns json|lexer:LexicalError|ParsingError {
+function time(ParserState state, string hours, string prevValue, boolean datePrefixed = false) returns json|ParsingError {
     // Validate hours
     check checkTime(state, hours, 0, 24, "hours");
 
@@ -172,16 +167,16 @@ function time(ParserState state, string hours, string prevValue, boolean datePre
 # + prevValue - The prefixed value to the current token 
 # + datePrefixed - True if there is a date before the time
 # + return - UTC object representing the time on success. Else, an parsing error.
-function timeOffset(ParserState state, string prevValue, boolean datePrefixed) returns json|lexer:LexicalError|ParsingError {
+function timeOffset(ParserState state, string prevValue, boolean datePrefixed) returns json|ParsingError {
     string valueBuffer = prevValue;
 
     match state.currentToken.token {
         lexer:ZULU => {
             return datePrefixed ? check getODT(state, valueBuffer + "Z")
-                    : generateGrammarError(state, "Cannot crate a UTC time for a local time");
+                : generateGrammarError(state, "Cannot create a UTC time for a local time");
         }
         lexer:PLUS|lexer:MINUS => {
-            if (datePrefixed) {
+            if datePrefixed {
                 valueBuffer += state.currentToken.token == lexer:PLUS ? "+" : "-";
 
                 // Validate hours
@@ -197,7 +192,7 @@ function timeOffset(ParserState state, string prevValue, boolean datePrefixed) r
 
                 return getODT(state, valueBuffer);
             }
-            return generateGrammarError(state, "Cannot crate a UTC time for a local time");
+            return generateGrammarError(state, "Cannot create a UTC time for a local time");
         }
     }
 }
@@ -212,12 +207,11 @@ function timeOffset(ParserState state, string prevValue, boolean datePrefixed) r
 # + return - Returns an error if the requirements are not met.
 function checkTime(ParserState state, string value, int lowerBound, int upperBound, string valueName) returns ParsingError? {
     // Expected the time digits to be 2.
-    if (value.length() != 2) {
+    if value.length() != 2 {
         return generateGrammarError(state, string `Expected number of digits in '${valueName}' to be 2`);
     }
     int intValue = <int>check processTypeCastingError(state, 'int:fromString(value));
-    if (intValue < lowerBound || intValue > upperBound) {
-
+    if intValue < lowerBound || intValue > upperBound {
         return generateGrammarError(state, string `Expected ${valueName} to be between ${lowerBound.toString()}-${upperBound.toString()}`);
     }
 }
@@ -230,12 +224,17 @@ function checkTime(ParserState state, string value, int lowerBound, int upperBou
 # + valueName - Name of the date component.
 # + return - Returns the value in integer. Else, an parsing error.
 function checkDate(ParserState state, string value, int numDigits, string valueName) returns int|ParsingError {
-    if (value.length() != numDigits) {
+    if value.length() != numDigits {
         return generateGrammarError(state, string `Expected number of digits in ${valueName} to be ${numDigits.toString()}`);
     }
     return <int>check processTypeCastingError(state, 'int:fromString(value));
 }
 
+# Obtain the offset date time as a string or time object based on the parseOffsetDateTime flag.
+#
+# + state - Current parser state
+# + inputTime - The offset date time as a string
+# + return - Converted date time as a string or a time object
 function getODT(ParserState state, string inputTime) returns json|ParsingError {
     if state.parseOffsetDateTime {
         return check processTypeCastingError(state, time:utcFromString(inputTime));

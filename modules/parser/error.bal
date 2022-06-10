@@ -1,7 +1,7 @@
 import toml.lexer;
 
 # Represents an error caused during the parsing.
-public type ParsingError distinct GrammarError|ConversionError|lexer:LexicalError;
+public type ParsingError GrammarError|ConversionError|lexer:LexicalError;
 
 # Represents an error caused for an invalid grammar production.
 public type GrammarError distinct error<lexer:ReadErrorDetails>;
@@ -20,7 +20,7 @@ function generateExpectError(ParserState state,
     lexer:TOMLToken|lexer:TOMLToken[]|string expectedTokens, lexer:TOMLToken beforeToken) returns GrammarError {
 
     string expectedTokensMessage;
-    if (expectedTokens is lexer:TOMLToken[]) { // If multiple tokens
+    if expectedTokens is lexer:TOMLToken[] { // If multiple tokens
         string tempMessage = expectedTokens.reduce(function(string message, lexer:TOMLToken token) returns string {
             return message + " '" + token + "' or";
         }, "");
@@ -29,7 +29,7 @@ function generateExpectError(ParserState state,
         expectedTokensMessage = " '" + <string>expectedTokens + "'";
     }
     string message =
-        string `Expected '${expectedTokensMessage}' after '${beforeToken}', but found '${state.currentToken.token}'`;
+        string `Expected${expectedTokensMessage} after '${beforeToken}', but found '${state.currentToken.token}'`;
 
     return generateGrammarError(state, message, expectedTokens);
 }
@@ -48,8 +48,8 @@ function generateGrammarError(ParserState state, string message,
     json? expected = (), json? context = ()) returns GrammarError
         => error(
             message + ".",
-            line = state.lexerState.lineNumber + 1,
-            column = state.lexerState.index,
+            line = state.lexerState.row(),
+            column = state.lexerState.column(),
             actual = state.currentToken.token,
             expected = expected
         );

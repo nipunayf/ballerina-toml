@@ -1,74 +1,94 @@
 import toml.lexer;
-import ballerina/lang.'boolean;
-import ballerina/lang.'float;
-import ballerina/lang.'int;
 
-# Handles the rule: key -> simple-key | dotted-key
-# key_value -> key '=' value.
-# The 'dotted-key' is being called recursively. 
-# At the terminal, a value is assigned to the last key, 
-# and nested under the previous key's map if exists.
+# Handles the grammar production of creating or retrieving an object 
+# for the key and assign the value to the latest key.
+# The latest key is nested under the previous key's map if exists.
 #
 # + state - Current parser state
 # + structure - The structure for the previous key. Null if there is no value.
 # + return - Returns the structure after assigning the value.
-function keyValue(ParserState state, map<json> structure) returns map<json>|ParsingError|lexer:LexicalError {
-    string tomlKey = state.currentToken.value;
-    check verifyKey(state, structure, tomlKey);
-    check verifyTableKey(state, state.currentTableKey == "" ? state.bufferedKey : state.currentTableKey + "." + state.bufferedKey);
+function keyValue(ParserState state, map<json> structure) returns map<json>|ParsingError {
+    // Validate the first key
+    check verifyKey(state, structure);
+    [string, map<json>][] dottedTableStack = [[state.currentToken.value, structure]];
     check checkToken(state);
 
-    match state.currentToken.token {
-        lexer:DOT => { // Process dotted keys
-            check checkToken(state, [lexer:UNQUOTED_KEY, lexer:BASIC_STRING, lexer:LITERAL_STRING]);
-            state.bufferedKey += "." + state.currentToken.value;
-            map<json> value = check keyValue(state, structure[tomlKey] is map<json> ? <map<json>>structure[tomlKey] : {});
-            structure[tomlKey] = value;
-            return structure;
-        }
+    // Check and validate the dotted key 
+    map<json> parentStructure;
+    string parentKey;
+    while state.currentToken.token == lexer:DOT {
+        // Expects another key after the dot
+        check checkToken(state, [lexer:UNQUOTED_KEY, lexer:BASIC_STRING, lexer:LITERAL_STRING]);
 
-        lexer:KEY_VALUE_SEPARATOR => { // Process value assignment
-            state.updateLexerContext(lexer:EXPRESSION_VALUE);
+        // Update the buffered key
+        state.bufferedKey += "." + state.currentToken.value;
 
-            check checkToken(state, [
-                lexer:BASIC_STRING,
-                lexer:LITERAL_STRING,
-                lexer:MULTILINE_BASIC_STRING_DELIMITER,
-                lexer:MULTILINE_LITERAL_STRING_DELIMITER,
-                lexer:DECIMAL,
-                lexer:BINARY,
-                lexer:OCTAL,
-                lexer:HEXADECIMAL,
-                lexer:INFINITY,
-                lexer:NAN,
-                lexer:OPEN_BRACKET,
-                lexer:BOOLEAN,
-                lexer:INLINE_TABLE_OPEN
-            ]);
+        // Obtain the parent structure of the current key
+        [parentKey, parentStructure] = dottedTableStack[dottedTableStack.length() - 1];
 
-            if (state.currentToken.token == lexer:INLINE_TABLE_OPEN) {
-                state.definedInlineTables.push(state.bufferedKey);
+        // Obtain the structure which the current key exists and push it to the stack
+        map<json> newStructure = parentStructure[parentKey] is map<json> ? <map<json>>parentStructure[parentKey] : {};
+        check verifyKey(state, newStructure);
+        dottedTableStack.push([state.currentToken.value, newStructure]);
 
-                // Existing tables cannot be overwritten by inline tables
-                if structure[tomlKey] is map<json> {
-                    return generateDuplicateError(state, state.bufferedKey);
-                }
-            }
+        check checkToken(state);
+    }
 
-            structure[tomlKey] = check dataValue(state);
-            return structure;
-        }
-        _ => {
-            return generateExpectError(state, [lexer:DOT, lexer:KEY_VALUE_SEPARATOR], lexer:UNQUOTED_KEY);
+    // There should be '=' after the key
+    if state.currentToken.token != lexer:KEY_VALUE_SEPARATOR {
+        return generateExpectError(state, [lexer:DOT, lexer:KEY_VALUE_SEPARATOR], lexer:UNQUOTED_KEY);
+    }
+
+    state.updateLexerContext(lexer:EXPRESSION_VALUE);
+    check checkToken(state, [
+        lexer:BASIC_STRING,
+        lexer:LITERAL_STRING,
+        lexer:MULTILINE_BASIC_STRING_DELIMITER,
+        lexer:MULTILINE_LITERAL_STRING_DELIMITER,
+        lexer:DECIMAL,
+        lexer:BINARY,
+        lexer:OCTAL,
+        lexer:HEXADECIMAL,
+        lexer:INFINITY,
+        lexer:NAN,
+        lexer:OPEN_BRACKET,
+        lexer:BOOLEAN,
+        lexer:INLINE_TABLE_OPEN
+    ]);
+
+    // Obtain the current structure 
+    string currentKey;
+    map<json> currentStructure;
+    [currentKey, currentStructure] = dottedTableStack.pop();
+
+    if state.currentToken.token == lexer:INLINE_TABLE_OPEN {
+        state.definedInlineTables.push(state.bufferedKey);
+
+        // Existing tables cannot be overwritten by inline tables
+        if currentStructure[currentKey] is map<json> {
+            return generateDuplicateError(state, state.bufferedKey);
         }
     }
+
+    // Assign the value to key
+    currentStructure[currentKey] = check dataValue(state);
+    map<json> prevStructure;
+
+    // Construct the dotted key structure if exists
+    while dottedTableStack.length() > 0 {
+        prevStructure = currentStructure;
+        [currentKey, currentStructure] = dottedTableStack.pop();
+        currentStructure[currentKey] = prevStructure;
+    }
+
+    return currentStructure;
 }
 
 # Generate any TOML data value.
 #
 # + state - Current parser state
 # + return - If success, returns the formatted data value. Else, an error.
-function dataValue(ParserState state) returns json|lexer:LexicalError|ParsingError {
+function dataValue(ParserState state) returns json|ParsingError {
     json returnData;
     match state.currentToken.token {
         lexer:MULTILINE_BASIC_STRING_DELIMITER => {
@@ -82,7 +102,7 @@ function dataValue(ParserState state) returns json|lexer:LexicalError|ParsingErr
         }
         lexer:HEXADECIMAL => {
             check checkEmptyInteger(state);
-            returnData = check processTypeCastingError(state, 'int:fromHexString(state.currentToken.value));
+            returnData = check processTypeCastingError(state, int:fromHexString(state.currentToken.value));
         }
         lexer:BINARY => {
             check checkEmptyInteger(state);
@@ -93,37 +113,47 @@ function dataValue(ParserState state) returns json|lexer:LexicalError|ParsingErr
             returnData = check processInteger(state, 8);
         }
         lexer:INFINITY => {
-            returnData = state.currentToken.value[0] == "+" ? 'float:Infinity : -'float:Infinity;
+            returnData = state.currentToken.value[0] == "+" ? float:Infinity : -float:Infinity;
         }
         lexer:NAN => {
-            returnData = 'float:NaN;
+            returnData = float:NaN;
         }
         lexer:BOOLEAN => {
-            returnData = check processTypeCastingError(state, 'boolean:fromString(state.currentToken.value));
+            returnData = check processTypeCastingError(state, boolean:fromString(state.currentToken.value));
         }
         lexer:OPEN_BRACKET => {
             returnData = check array(state);
 
             // Static arrays cannot be redefined by the array tables.
-            if (!state.isArrayTable) {
-                state.addTableKey(state.currentTableKey.length() == 0 ? state.bufferedKey : state.currentTableKey + "." + state.bufferedKey);
-                state.bufferedKey = "";
-            }
+            state.reserveKey();
         }
         lexer:INLINE_TABLE_OPEN => {
             returnData = check inlineTable(state);
 
             // Inline tables cannot be redefined by the standard tables.
-            if (!state.isArrayTable) {
-                state.addTableKey(state.currentTableKey.length() == 0 ? state.bufferedKey : state.currentTableKey + "." + state.bufferedKey);
-                state.bufferedKey = "";
-            }
+            state.reserveKey();
         }
         _ => { // Latter primitive data types
             returnData = state.currentToken.value;
         }
     }
     return returnData;
+}
+
+# Evaluates an integer of a different base
+#
+# + state - Current parser state
+# + numberSystem - Number system of the value
+# + return - Processed integer. Error if there is a string.
+function processInteger(ParserState state, int numberSystem) returns int|ParsingError {
+    int value = 0;
+    int power = 1;
+    int length = state.currentToken.value.length() - 1;
+    foreach int i in 0 ... length {
+        value += <int>(check processTypeCastingError(state, 'int:fromString(state.currentToken.value[length - i]))) * power;
+        power *= numberSystem;
+    }
+    return value;
 }
 
 # Check if the digits are empty.

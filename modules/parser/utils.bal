@@ -2,32 +2,34 @@ import toml.lexer;
 
 # Assert the next lexer token with the predicted token.
 # If no token is provided, then the next token is retrieved without an error checking.
-# Hence, the error checking must be done explicitly.
+# In this case, the error checking must be done explicitly.
 #
 # + state - Current parser state
 # + expectedTokens - Predicted token or tokens
 # + customMessage - Error message to be displayed if the expected token not found  
-# + return - Parsing error if not found
-function checkToken(ParserState state, lexer:TOMLToken|lexer:TOMLToken[] expectedTokens = lexer:DUMMY, string customMessage = "") returns ParsingError|lexer:LexicalError|() {
+# + return - Parsing error on failure
+function checkToken(ParserState state, lexer:TOMLToken|lexer:TOMLToken[] expectedTokens = lexer:DUMMY, 
+    string customMessage = "") returns ParsingError? {
+
     lexer:TOMLToken prevToken = state.currentToken.token;
     state.lexerState = check lexer:scan(state.lexerState);
     state.currentToken = state.lexerState.getToken();
 
     // Bypass error handling.
-    if (expectedTokens == lexer:DUMMY) {
+    if expectedTokens == lexer:DUMMY {
         return;
     }
 
     // Automatically generates a template error message if there is no custom message.
     // Generate an error if the expected token differ from the actual token.
-    if (expectedTokens is lexer:TOMLToken) {
-        if (state.currentToken.token != expectedTokens) {
+    if expectedTokens is lexer:TOMLToken {
+        if state.currentToken.token != expectedTokens {
             return customMessage.length() == 0
                 ? generateExpectError(state, expectedTokens, prevToken)
                 : generateGrammarError(state, customMessage);
         }
     } else {
-        if (expectedTokens.indexOf(state.currentToken.token) == ()) {
+        if expectedTokens.indexOf(state.currentToken.token) == () {
             return customMessage.length() == 0
                 ? generateExpectError(state, expectedTokens, prevToken)
                 : generateGrammarError(state, customMessage);
@@ -43,17 +45,17 @@ function checkToken(ParserState state, lexer:TOMLToken|lexer:TOMLToken[] expecte
 # + return - Constructed final toml object on success. Else, a parsing error.
 function buildTOMLObject(ParserState state, map<json> structure) returns map<json>|ParsingError {
     // Under the root table
-    if (state.keyStack.length() == 0) {
+    if state.keyStack.length() == 0 {
         return state.currentStructure;
     }
 
     // Under the key tables at the depth of 1
-    if (state.keyStack.length() == 1) {
+    if state.keyStack.length() == 1 {
         string key = state.keyStack.pop();
-        if (state.isArrayTable) {
+        if state.isArrayTable {
 
             // Adds the current structure to the end of the array.
-            if (structure[key] is json[]) {
+            if structure[key] is json[] {
                 (<json[]>structure[key]).push(state.currentStructure.clone());
             }
 
@@ -75,13 +77,13 @@ function buildTOMLObject(ParserState state, map<json> structure) returns map<jso
     map<json> value;
 
     // If the key is a table
-    if (structure[key] is map<json>) {
+    if structure[key] is map<json> {
         value = check buildTOMLObject(state, <map<json>>structure[key]);
         structure[key] = value;
     }
 
     // If there is a standard table under an array table, obtain the latest object.
-    else if (structure[key] is json[]) {
+    else if structure[key] is json[] {
         value = check buildTOMLObject(state, <map<json>>(<json[]>structure[key]).pop());
         (<json[]>structure[key]).push(value);
     }
@@ -93,22 +95,6 @@ function buildTOMLObject(ParserState state, map<json> structure) returns map<jso
     }
 
     return structure;
-}
-
-# Evaluates an integer of a different base
-#
-# + state - Current parser state
-# + numberSystem - Number system of the value
-# + return - Processed integer. Error if there is a string.
-function processInteger(ParserState state, int numberSystem) returns int|ParsingError {
-    int value = 0;
-    int power = 1;
-    int length = state.currentToken.value.length() - 1;
-    foreach int i in 0 ... length {
-        value += <int>(check processTypeCastingError(state, 'int:fromString(state.currentToken.value[length - i]))) * power;
-        power *= numberSystem;
-    }
-    return value;
 }
 
 # Check errors during type casting to Ballerina types.

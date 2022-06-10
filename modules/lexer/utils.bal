@@ -1,18 +1,17 @@
-# Encapsulate a function to run solely on the remaining characters.
-# Function lookahead to capture the lexemes for a targeted token.
+# Executes the provided function on upcoming characters until the terminating character is found.
 #
 # + state - Current lexer state  
-# + process - Function to be executed on each iteration  
-# + successToken - Token to be returned on successful traverse of the characters  
+# + process - Function to be executed on each character iteration  
+# + successToken - Token to be returned on successful traverse of the characters
 # + message - Message to display if the end delimiter is not shown
-# + return - Lexical Error if available
+# + return - Tokenized TOML token on success, Else, an lexical error.
 function iterate(LexerState state, function (LexerState state) returns boolean|LexicalError process,
                     TOMLToken successToken,
                     string message = "") returns LexerState|LexicalError {
 
     // Iterate the given line to check the DFA
     while state.index < state.line.length() {
-        if (check process(state)) {
+        if check process(state) {
             return state.tokenize(successToken);
         }
         state.forward();
@@ -23,15 +22,16 @@ function iterate(LexerState state, function (LexerState state) returns boolean|L
     return message.length() == 0 ? state.tokenize(successToken) : generateLexicalError(state, message);
 }
 
-# Check if the tokens adhere to the given string.
+# Check if the tokens adhere to the given keyword.
 #
 # + state - Current lexer state  
-# + chars - Expected string  
+# + chars - Expected keyword
 # + successToken - Output token if succeed
-# + return - If success, returns the token. Else, returns the parsing error.
+# + return - Tokenized TOML token on success. Else, returns a lexical error.
 function tokensInSequence(LexerState state, string chars, TOMLToken successToken) returns LexerState|LexicalError {
+    // Check if the characters for a keyword in order
     foreach string char in chars {
-        if (!checkCharacter(state, char)) {
+        if !checkCharacter(state, char) {
             return generateInvalidCharacterError(state, successToken);
         }
         state.forward();
@@ -47,9 +47,9 @@ function tokensInSequence(LexerState state, string chars, TOMLToken successToken
 # + expectedCharacters - Expected characters at the current index
 # + return - True if the assertion is true. Else, an lexical error
 function checkCharacter(LexerState state, string|string[] expectedCharacters) returns boolean {
-    if (expectedCharacters is string) {
+    if expectedCharacters is string {
         return expectedCharacters == state.peek();
-    } else if (expectedCharacters.indexOf(<string>state.peek()) == ()) {
+    } else if expectedCharacters.indexOf(state.peek() ?: "") == () {
         return false;
     }
     return true;
