@@ -1,6 +1,6 @@
 # Ballerina TOML Parser
 
-![Build](https://github.com/nipunayf/module-ballerina-toml/actions/workflows/ci.yml/badge.svg)
+**The development of this parser is continued in https://github.com/ballerina-platform/module-ballerina-toml**
 
 Ballerina TOML Parser provides APIs to convert a TOML configuration file to `map<json>`, and vice-versa. Since the parser is following LL(1) grammar, it follows a non-recursive predictive parsing algorithm which operates in a linear time complexity.
 
